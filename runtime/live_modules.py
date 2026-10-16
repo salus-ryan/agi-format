@@ -44,6 +44,7 @@ from runtime.types import (
     Reward,
     State,
 )
+from runtime.planner import PlanSearch
 from runtime.verification import FormalVerifier
 from runtime.world_model import WorldModel
 
@@ -720,6 +721,9 @@ class LiveKernel:
         # Verification
         self.verifier = FormalVerifier()
 
+        # Plan search (autoresearch-style: generate candidates, simulate, keep/discard)
+        self.planner = PlanSearch(n_candidates=3, max_plan_steps=5)
+
         # Learning
         self.replay_buffer = ReplayBuffer(
             capacity=50000, persist_path=f"{memory_path}/replay_buffer.json",
@@ -810,7 +814,44 @@ class LiveKernel:
         # 5. LEARN FROM PAST -- inject high-reward episodes into context
         good_episodes = self._get_learning_context()
 
-        # 6. PLAN + REASON + ACT (multi-turn with tool use)
+        # 6. PLAN SEARCH -- generate candidates, simulate, select best, execute
+        #    (autoresearch pattern: try, measure, keep or discard)
+        plan_context = {
+            "working_memory": self.working_memory.get_context(),
+            "user_model": self.user_model.to_dict(),
+            "world_state": self.world_model.summary(),
+        }
+        plan_result = await self.planner.search(
+            query=user_input,
+            context=plan_context,
+            llm_fn=self.llm.chat_async,
+            tool_fn=self.tools.execute,
+            world_model=self.world_model,
+        )
+
+        all_tool_results = []
+        plan_executed = False
+
+        if plan_result:
+            # Plan search handled tool execution
+            all_tool_results = plan_result.tool_results
+            plan_executed = True
+            step_log["events"].append({
+                "phase": "plan_search",
+                "plan": plan_result.plan.description[:200],
+                "predicted_reward": plan_result.plan.predicted_reward,
+                "actual_reward": plan_result.actual_reward,
+                "kept": plan_result.kept,
+                "tools_executed": len(plan_result.tool_results),
+            })
+
+            # Feed plan results into working memory
+            plan_summary = f"Plan '{plan_result.plan.description[:100]}': " + \
+                          ("KEPT" if plan_result.kept else "DISCARDED") + \
+                          f" (reward={plan_result.actual_reward:.2f})"
+            self.working_memory.attend(plan_summary, source="plan_search", relevance=0.9)
+
+        # 7. REASON + RESPOND (incorporate plan results if any)
         system_prompt = self._build_system_prompt(user_input)
         self.conversation_history = [{"role": "system", "content": system_prompt}] + \
             [m for m in self.conversation_history if m["role"] != "system"][-18:]
@@ -822,6 +863,13 @@ class LiveKernel:
             context_parts.append(memory_context)
         if good_episodes:
             context_parts.append(good_episodes)
+        if plan_result:
+            # Feed the plan execution results into the LLM's context
+            plan_ctx = f"## Plan executed: {plan_result.plan.description}\n"
+            plan_ctx += f"Status: {'KEPT' if plan_result.kept else 'DISCARDED'}\n"
+            plan_ctx += f"Outcome: {plan_result.actual_outcome[:500]}\n"
+            plan_ctx += "Incorporate these results into your response."
+            context_parts.append(plan_ctx)
         if context_parts:
             self.conversation_history.insert(-1, {
                 "role": "system",
@@ -829,7 +877,8 @@ class LiveKernel:
             })
 
         # Agent loop: generate, check for tool calls, execute, repeat
-        all_tool_results = []
+        # (plan search already handled the heavy tool use; this handles
+        #  any remaining tool calls in the response itself)
         max_tool_rounds = 5
         final_response = ""
 
@@ -891,6 +940,7 @@ class LiveKernel:
 
         step_log["events"].append({
             "phase": "act",
+            "plan_executed": plan_executed,
             "tool_rounds": min(tool_round + 1, max_tool_rounds),
             "tools_executed": len(all_tool_results),
             "tools_succeeded": sum(1 for t in all_tool_results if t.get("success")),
@@ -1210,6 +1260,7 @@ class LiveKernel:
                 "uptime_seconds": self.geolocation.temporal["uptime_seconds"],
             },
             "lora": self.lora_trainer.summary() if self.lora_trainer else None,
+            "planner": self.planner.summary(),
         }
 
     def get_memories(self, limit: int = 50) -> list[dict]:
