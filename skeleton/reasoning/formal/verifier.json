@@ -1,0 +1,33 @@
+{
+  "name": "formal_verifier",
+  "description": "Formal verification engine. Checks logical validity, proves mathematical statements, verifies code correctness. Provides hard guarantees where probabilistic reasoning is insufficient.",
+  "input_type": "Proposition",
+  "output_type": "ProofResult",
+  "config": {
+    "backends": [
+      {
+        "name": "smt_solver",
+        "description": "Satisfiability Modulo Theories -- good for constraint checking, arithmetic, bitvectors",
+        "engine": "z3",
+        "timeout_ms": 30000
+      },
+      {
+        "name": "proof_assistant",
+        "description": "Interactive theorem prover for complex mathematical proofs",
+        "engine": "lean4",
+        "tactic_search": {
+          "enabled": true,
+          "model_ref": "weights/tactic_predictor.safetensors"
+        }
+      },
+      {
+        "name": "type_checker",
+        "description": "Verify type correctness of generated code",
+        "languages": ["python", "typescript", "rust"]
+      }
+    ],
+    "auto_select": true,
+    "fallback_to_probabilistic": true,
+    "confidence_threshold": 0.99
+  }
+}

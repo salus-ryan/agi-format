@@ -1,0 +1,56 @@
+{
+  "name": "working_memory",
+  "description": "Working memory -- the agent's active context. Bounded-capacity scratchpad for what's currently relevant. Analogous to human working memory / the 'context window' but structured.",
+  "config": {
+    "capacity": {
+      "max_items": 50,
+      "max_tokens": 131072,
+      "overflow_strategy": "importance_eviction",
+      "description": "When full, evict least important items. Critical items are pinned."
+    },
+    "structure": {
+      "slots": [
+        {
+          "name": "current_goal",
+          "type": "Goal",
+          "pinned": true
+        },
+        {
+          "name": "current_plan",
+          "type": "Plan",
+          "pinned": true
+        },
+        {
+          "name": "recent_percepts",
+          "type": "Percept[]",
+          "max_items": 10,
+          "pinned": false
+        },
+        {
+          "name": "recent_observations",
+          "type": "Observation[]",
+          "max_items": 10,
+          "pinned": false
+        },
+        {
+          "name": "retrieved_memories",
+          "type": "Memory[]",
+          "max_items": 20,
+          "pinned": false
+        },
+        {
+          "name": "scratchpad",
+          "type": "any",
+          "max_tokens": 32768,
+          "pinned": false,
+          "description": "Free-form workspace for intermediate reasoning"
+        }
+      ]
+    },
+    "attention": {
+      "mechanism": "relevance_gated",
+      "description": "Items are weighted by relevance to current goal. Irrelevant items decay faster.",
+      "decay_rate": 0.95
+    }
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "name": "online_learner",
+  "description": "Online learning module. Updates the agent's parameters from each new experience in real time. This is what makes the agent improve with use rather than being frozen at training time.",
+  "config": {
+    "algorithm": {
+      "type": "hybrid",
+      "components": [
+        {
+          "name": "lora_adaptation",
+          "description": "Low-rank adaptation of base model weights for fast task-specific learning",
+          "rank": 16,
+          "alpha": 32,
+          "target_modules": ["q_proj", "v_proj", "o_proj"],
+          "learning_rate": 1e-4
+        },
+        {
+          "name": "retrieval_update",
+          "description": "Update memory stores with new experiences (non-parametric learning)",
+          "memory_refs": [
+            "memory/episodic/episodic.json",
+            "memory/semantic/semantic.json",
+            "memory/procedural/procedural.json"
+          ]
+        },
+        {
+          "name": "reward_model_update",
+          "description": "Refine internal reward model based on observed outcomes",
+          "learning_rate": 1e-5,
+          "update_frequency": "every_episode"
+        }
+      ]
+    },
+    "update_triggers": {
+      "after_each_action": false,
+      "after_each_episode": true,
+      "on_surprising_outcome": true,
+      "surprise_threshold": 0.5,
+      "description": "Surprise = divergence between predicted and actual outcome"
+    },
+    "safeguards": {
+      "max_weight_change_per_update": 0.01,
+      "validation_on_held_out": true,
+      "rollback_on_degradation": true
+    }
+  }
+}

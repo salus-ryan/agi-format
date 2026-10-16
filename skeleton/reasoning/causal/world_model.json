@@ -1,0 +1,38 @@
+{
+  "name": "world_model",
+  "description": "Causal world model. Maintains a structured representation of how the world works -- entities, their properties, causal relationships, and transition dynamics. Enables counterfactual reasoning ('what would happen if...').",
+  "input_type": "State",
+  "output_type": "PredictedState",
+  "config": {
+    "representation": {
+      "type": "hybrid",
+      "neural_component": {
+        "description": "Learned dynamics model for continuous/fuzzy predictions",
+        "model_ref": "weights/world_model.safetensors",
+        "latent_dim": 1024
+      },
+      "symbolic_component": {
+        "description": "Explicit causal graph for structured/logical predictions",
+        "format": "causal_dag",
+        "max_nodes": 10000,
+        "max_edges": 50000
+      }
+    },
+    "capabilities": {
+      "forward_simulation": {
+        "description": "Predict next state given current state + action",
+        "max_horizon": 100
+      },
+      "counterfactual": {
+        "description": "What would have happened if action X instead of Y?",
+        "enabled": true
+      },
+      "abductive": {
+        "description": "What action/cause best explains this observed state?",
+        "enabled": true,
+        "max_hypotheses": 10
+      }
+    },
+    "update_rule": "bayesian_online"
+  }
+}

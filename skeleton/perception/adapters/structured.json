@@ -1,0 +1,14 @@
+{
+  "name": "structured_adapter",
+  "description": "Converts structured data (JSON, CSV, SQL results, API responses) into Percepts with schema awareness.",
+  "input_type": "JSON",
+  "output_type": "Percept",
+  "config": {
+    "supported_formats": ["json", "csv", "parquet", "xml", "yaml"],
+    "schema_inference": true,
+    "max_records": 100000,
+    "embedding_dim": 4096,
+    "type_coercion": "strict",
+    "null_handling": "explicit_token"
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://agi-format.org/schemas/manifest/v0.1.0.json",
+  "format_version": "0.1.0",
+  "agent": {
+    "name": "skeleton-agent",
+    "version": "0.1.0",
+    "description": "Skeleton AGI agent demonstrating the .agi file format. All modules are stubs with defined interfaces.",
+    "author": "agi-format",
+    "license": "MIT"
+  },
+  "capabilities": {
+    "perception": {
+      "module": "perception/module.json",
+      "required": true
+    },
+    "reasoning": {
+      "module": "reasoning/module.json",
+      "required": true
+    },
+    "memory": {
+      "module": "memory/module.json",
+      "required": true
+    },
+    "language": {
+      "module": "language/module.json",
+      "required": true
+    },
+    "action": {
+      "module": "action/module.json",
+      "required": true
+    },
+    "learning": {
+      "module": "learning/module.json",
+      "required": true
+    },
+    "goals": {
+      "module": "goals/module.json",
+      "required": true
+    }
+  },
+  "runtime": {
+    "min_memory_gb": 8,
+    "gpu_required": false,
+    "min_gpu_vram_gb": null,
+    "sandbox_required": true,
+    "entrypoint": "goals/goal_loop.json"
+  }
+}

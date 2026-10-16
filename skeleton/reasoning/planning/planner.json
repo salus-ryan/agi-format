@@ -1,0 +1,39 @@
+{
+  "name": "planner",
+  "description": "Hierarchical task planner. Decomposes goals into ordered steps, handles contingencies, and replans when the world diverges from expectations.",
+  "input_type": "State, Goal",
+  "output_type": "Plan",
+  "config": {
+    "algorithm": {
+      "type": "hybrid_htn_mcts",
+      "description": "Hierarchical Task Network for structured decomposition + Monte Carlo Tree Search for uncertain domains",
+      "htn": {
+        "max_decomposition_depth": 10,
+        "method_library_ref": "memory/procedural/procedural.json"
+      },
+      "mcts": {
+        "simulations_per_move": 100,
+        "exploration_constant": 1.414,
+        "world_model_ref": "reasoning/causal/world_model.json"
+      }
+    },
+    "plan_representation": {
+      "type": "partial_order_plan",
+      "supports_parallel_steps": true,
+      "supports_conditional_branches": true,
+      "supports_loops": true
+    },
+    "replanning": {
+      "trigger": "state_divergence_threshold",
+      "threshold": 0.3,
+      "max_replans_per_goal": 10,
+      "preserve_completed_steps": true
+    },
+    "resource_awareness": {
+      "track_time": true,
+      "track_compute": true,
+      "track_external_calls": true,
+      "budget_enforcement": "soft"
+    }
+  }
+}

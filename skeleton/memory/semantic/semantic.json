@@ -1,0 +1,46 @@
+{
+  "name": "semantic_store",
+  "description": "Semantic memory -- structured knowledge about the world. Facts, concepts, relationships. 'What is true about the world?' The agent's knowledge base.",
+  "config": {
+    "backend": {
+      "type": "knowledge_graph",
+      "engine": "hybrid",
+      "graph_store": {
+        "type": "property_graph",
+        "max_nodes": 10000000,
+        "max_edges": 50000000
+      },
+      "vector_index": {
+        "type": "hnswlib",
+        "embedding_dim": 4096,
+        "distance_metric": "cosine"
+      }
+    },
+    "storage": {
+      "path": "memory/semantic/knowledge.db",
+      "persistence": "on_write",
+      "compression": "zstd"
+    },
+    "fact_schema": {
+      "subject": "Entity",
+      "predicate": "Relation",
+      "object": "Entity | Literal",
+      "confidence": "float (0-1)",
+      "source": "string",
+      "last_verified": "iso8601"
+    },
+    "retrieval": {
+      "by_entity": true,
+      "by_relation": true,
+      "by_embedding_similarity": true,
+      "subgraph_extraction": true,
+      "max_hops": 3,
+      "max_results": 50
+    },
+    "update_policy": {
+      "conflict_resolution": "confidence_weighted",
+      "allow_contradictions": false,
+      "require_source": true
+    }
+  }
+}

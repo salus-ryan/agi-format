@@ -1,0 +1,136 @@
+{
+  "name": "goal_loop",
+  "description": "The main agent loop. This is the heartbeat of the agent -- the top-level control flow that orchestrates all capabilities into coherent behavior.",
+  "loop": "while_alive",
+  "steps": [
+    {
+      "name": "perceive",
+      "module": "perception",
+      "call": "observe",
+      "inputs": ["environment"],
+      "outputs": ["percepts"],
+      "description": "Gather input from all available modalities"
+    },
+    {
+      "name": "remember",
+      "module": "memory",
+      "call": "update",
+      "inputs": ["state", "percepts"],
+      "outputs": ["state"],
+      "description": "Integrate new percepts into working memory, retrieve relevant memories"
+    },
+    {
+      "name": "understand",
+      "module": "language",
+      "call": "understand",
+      "inputs": ["percepts.text"],
+      "outputs": ["semantic_frames"],
+      "condition": "percepts contains text",
+      "description": "Parse any natural language input into structured meaning"
+    },
+    {
+      "name": "select_goal",
+      "module": "goals",
+      "call": "select",
+      "inputs": ["state", "semantic_frames"],
+      "outputs": ["current_goal"],
+      "condition": "current_goal is null or current_goal.done or new_user_request",
+      "description": "Choose what to work on next"
+    },
+    {
+      "name": "plan",
+      "module": "reasoning",
+      "call": "plan",
+      "inputs": ["state", "current_goal"],
+      "outputs": ["plan"],
+      "description": "Decompose goal into executable steps"
+    },
+    {
+      "name": "execute_plan",
+      "loop": "for_each",
+      "over": "plan.steps",
+      "steps": [
+        {
+          "name": "decide",
+          "module": "reasoning",
+          "call": "decide",
+          "inputs": ["state", "step"],
+          "outputs": ["action"],
+          "description": "Choose concrete action for this plan step"
+        },
+        {
+          "name": "check_alignment",
+          "module": "goals",
+          "call": "check_alignment",
+          "inputs": ["action"],
+          "outputs": ["approved"],
+          "on_reject": {
+            "action": "escalate",
+            "ref": "goals/escalation/escalation.json"
+          },
+          "description": "Verify action is safe and aligned with values"
+        },
+        {
+          "name": "act",
+          "module": "action",
+          "call": "execute",
+          "inputs": ["action"],
+          "outputs": ["observation"],
+          "requires": "approved == true",
+          "description": "Execute the action in the sandboxed environment"
+        },
+        {
+          "name": "observe_result",
+          "module": "memory",
+          "call": "update",
+          "inputs": ["state", "observation"],
+          "outputs": ["state"],
+          "description": "Integrate action result into state"
+        },
+        {
+          "name": "compute_reward",
+          "module": "action",
+          "call": "compute_reward",
+          "inputs": ["state", "action", "observation"],
+          "outputs": ["reward"],
+          "description": "Evaluate how well the action went"
+        },
+        {
+          "name": "learn",
+          "module": "learning",
+          "call": "update",
+          "inputs": ["state", "action", "observation", "reward"],
+          "outputs": [],
+          "description": "Update agent from this experience"
+        },
+        {
+          "name": "communicate",
+          "module": "language",
+          "call": "generate",
+          "inputs": ["state", "observation"],
+          "outputs": ["response"],
+          "condition": "user_expects_response",
+          "description": "Generate natural language response if appropriate"
+        },
+        {
+          "name": "replan_check",
+          "module": "reasoning",
+          "call": "should_replan",
+          "inputs": ["state", "plan"],
+          "outputs": ["should_replan"],
+          "on_true": "break",
+          "description": "Check if the plan is still valid given new state"
+        }
+      ]
+    },
+    {
+      "name": "consolidate",
+      "module": "learning",
+      "call": "consolidate",
+      "inputs": ["learning_state"],
+      "outputs": [],
+      "condition": "consolidation_due",
+      "description": "Periodic memory consolidation (anti-forgetting)"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "name": "inference_engine",
+  "description": "Core inference engine. In the skeleton, this wraps an LLM for general reasoning. A full implementation would integrate symbolic reasoning, neural inference, and hybrid approaches.",
+  "input_type": "State",
+  "output_type": "Response",
+  "config": {
+    "backend": {
+      "type": "transformer",
+      "model_ref": "weights/base_llm.safetensors",
+      "context_length": 131072,
+      "hidden_dim": 4096,
+      "num_layers": 32,
+      "num_heads": 32
+    },
+    "inference_modes": [
+      {
+        "name": "fast",
+        "description": "Single-pass autoregressive generation. Low latency, good for routine tasks.",
+        "max_tokens": 4096
+      },
+      {
+        "name": "deliberate",
+        "description": "Chain-of-thought with self-critique. Higher latency, better for novel problems.",
+        "max_tokens": 32768,
+        "self_critique": true,
+        "search_budget": 16
+      },
+      {
+        "name": "formal",
+        "description": "Delegates to formal verifier for provably correct reasoning.",
+        "verifier_ref": "reasoning/formal/verifier.json"
+      }
+    ],
+    "mode_selection": "adaptive",
+    "temperature_default": 0.0,
+    "top_p": 1.0
+  }
+}

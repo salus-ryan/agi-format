@@ -1,0 +1,43 @@
+{
+  "name": "learning",
+  "version": "0.1.0",
+  "description": "Continual learning and adaptation. Online learning from experience, experience replay for consolidation, curriculum-driven self-improvement, and anti-forgetting mechanisms.",
+  "components": [
+    {
+      "name": "online_learner",
+      "path": "online/online.json",
+      "type": "engine",
+      "interface": "OnlineLearner<State, Action, Observation, WeightDelta>"
+    },
+    {
+      "name": "replay_buffer",
+      "path": "replay/replay.json",
+      "type": "store",
+      "interface": "ReplayBuffer<Experience, ExperienceBatch>"
+    },
+    {
+      "name": "curriculum",
+      "path": "curriculum/curriculum.json",
+      "type": "policy",
+      "interface": "Curriculum<SkillInventory, Task>"
+    },
+    {
+      "name": "consolidation",
+      "path": "consolidation/consolidation.json",
+      "type": "engine",
+      "interface": "Consolidation<WeightDelta, ConsolidatedWeights>"
+    }
+  ],
+  "dependencies": ["memory", "reasoning", "action"],
+  "inputs": [
+    { "name": "state", "type": "State", "from": "memory.working" },
+    { "name": "action", "type": "Action", "from": "action.execute" },
+    { "name": "observation", "type": "Observation", "from": "action.execute" },
+    { "name": "reward", "type": "Reward", "from": "action.feedback_loop" }
+  ],
+  "outputs": [
+    { "name": "weight_updates", "type": "WeightDelta", "to": "reasoning.inference_engine" },
+    { "name": "memory_updates", "type": "MemoryUpdate[]", "to": "memory.consolidate" },
+    { "name": "new_procedures", "type": "Procedure[]", "to": "memory.procedural_store" }
+  ]
+}

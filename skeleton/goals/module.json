@@ -1,0 +1,42 @@
+{
+  "name": "goals",
+  "version": "0.1.0",
+  "description": "Goal management, value alignment, and autonomy control. Defines the agent's drives, decomposes objectives, enforces alignment constraints, and handles escalation to humans.",
+  "components": [
+    {
+      "name": "goal_loop",
+      "path": "goal_loop.json",
+      "type": "engine",
+      "interface": "GoalLoop<State, Goal, Action>"
+    },
+    {
+      "name": "alignment_checker",
+      "path": "alignment/alignment.json",
+      "type": "policy",
+      "interface": "AlignmentChecker<Action, AlignmentConstraint[], boolean>"
+    },
+    {
+      "name": "goal_decomposer",
+      "path": "decomposition/decomposition.json",
+      "type": "planner",
+      "interface": "GoalDecomposer<Goal, SubGoal[]>"
+    },
+    {
+      "name": "escalation_policy",
+      "path": "escalation/escalation.json",
+      "type": "policy",
+      "interface": "EscalationPolicy<State, Action, EscalationDecision>"
+    }
+  ],
+  "dependencies": ["reasoning", "memory"],
+  "inputs": [
+    { "name": "state", "type": "State", "from": "memory.working" },
+    { "name": "user_goals", "type": "Goal[]", "from": "environment" },
+    { "name": "proposed_action", "type": "Action", "from": "reasoning.decide" }
+  ],
+  "outputs": [
+    { "name": "current_goal", "type": "Goal", "to": "reasoning.plan" },
+    { "name": "alignment_approved", "type": "boolean", "to": "action.execute" },
+    { "name": "escalation", "type": "EscalationDecision", "to": "environment" }
+  ]
+}

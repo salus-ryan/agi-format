@@ -1,0 +1,26 @@
+{
+  "name": "grounding_engine",
+  "description": "Grounds raw percepts in a world model. Maps perceptual tokens to entities, relations, and spatial/temporal context. This is what makes perception meaningful rather than just pattern matching.",
+  "input_type": "Percept[]",
+  "output_type": "GroundedState",
+  "config": {
+    "world_model_ref": "reasoning/causal/world_model.json",
+    "entity_linking": {
+      "enabled": true,
+      "knowledge_base_ref": "memory/semantic/semantic.json",
+      "confidence_threshold": 0.7
+    },
+    "spatial_reasoning": {
+      "enabled": true,
+      "coordinate_system": "relative"
+    },
+    "temporal_reasoning": {
+      "enabled": true,
+      "time_representation": "interval_algebra"
+    },
+    "cross_modal_binding": {
+      "enabled": true,
+      "description": "Bind percepts from different modalities that refer to the same entity"
+    }
+  }
+}

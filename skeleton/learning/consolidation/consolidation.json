@@ -1,0 +1,54 @@
+{
+  "name": "consolidation",
+  "description": "Memory consolidation and anti-forgetting. The hardest unsolved problem in continual learning. This module prevents catastrophic forgetting when learning new things by protecting important old knowledge.",
+  "config": {
+    "strategy": {
+      "type": "multi_method",
+      "methods": [
+        {
+          "name": "elastic_weight_consolidation",
+          "description": "Penalize changes to parameters that are important for previously learned tasks",
+          "lambda": 5000,
+          "fisher_sample_size": 1000
+        },
+        {
+          "name": "progressive_nets",
+          "description": "Allocate new capacity for new tasks while freezing old pathways",
+          "max_columns": 10,
+          "lateral_connections": true
+        },
+        {
+          "name": "episodic_replay",
+          "description": "Periodically replay old experiences during new learning",
+          "replay_ratio": 0.3,
+          "replay_buffer_ref": "learning/replay/replay.json"
+        },
+        {
+          "name": "knowledge_distillation",
+          "description": "Periodically distill learned knowledge into a compact representation",
+          "frequency_episodes": 1000,
+          "teacher_patience": 5
+        }
+      ]
+    },
+    "monitoring": {
+      "forgetting_detection": {
+        "enabled": true,
+        "method": "performance_on_held_out_tasks",
+        "threshold": 0.05,
+        "description": "Alert if performance on any previously mastered task drops by >5%"
+      },
+      "capacity_monitoring": {
+        "enabled": true,
+        "max_total_parameters_ratio": 2.0,
+        "description": "Alert if total parameters grow beyond 2x the base model"
+      }
+    },
+    "sleep_consolidation": {
+      "enabled": true,
+      "description": "Periodic offline consolidation phase (analogous to sleep). Replays, reorganizes, and compresses memories.",
+      "frequency": "every_1000_episodes",
+      "duration_steps": 100
+    }
+  }
+}

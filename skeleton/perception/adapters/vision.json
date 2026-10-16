@@ -1,0 +1,19 @@
+{
+  "name": "vision_adapter",
+  "description": "Converts image inputs into visual Percept representations via a vision encoder.",
+  "input_type": "ImageBuffer",
+  "output_type": "Percept",
+  "config": {
+    "encoder": {
+      "type": "vit",
+      "variant": "vit-l-14",
+      "model_ref": "weights/vision_encoder.safetensors",
+      "patch_size": 14,
+      "image_size": 336
+    },
+    "supported_formats": ["png", "jpg", "webp", "bmp"],
+    "max_resolution": [4096, 4096],
+    "embedding_dim": 4096,
+    "tile_strategy": "dynamic_tiles"
+  }
+}

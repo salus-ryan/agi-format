@@ -1,0 +1,44 @@
+{
+  "name": "feedback_loop",
+  "description": "Action-observation feedback loop. Closes the loop between acting and perceiving -- the agent observes the results of its actions and updates its state accordingly. Without this, the agent is open-loop (fire and forget).",
+  "config": {
+    "observation_window": {
+      "timeout_ms": 30000,
+      "poll_interval_ms": 100,
+      "description": "How long to wait for and how often to check for action results"
+    },
+    "reward_computation": {
+      "type": "multi_signal",
+      "signals": [
+        {
+          "name": "goal_progress",
+          "weight": 0.4,
+          "description": "Did this action move us closer to the current goal?"
+        },
+        {
+          "name": "prediction_accuracy",
+          "weight": 0.3,
+          "description": "Did the world model correctly predict the outcome?"
+        },
+        {
+          "name": "efficiency",
+          "weight": 0.2,
+          "description": "Resource cost of the action relative to alternatives"
+        },
+        {
+          "name": "safety",
+          "weight": 0.1,
+          "description": "Did the action stay within safety constraints? (negative reward if violated)"
+        }
+      ],
+      "normalize": true,
+      "range": [-1.0, 1.0]
+    },
+    "error_handling": {
+      "on_timeout": "retry_once_then_report",
+      "on_failure": "log_and_replan",
+      "on_unexpected_result": "update_world_model_and_replan",
+      "max_retries": 2
+    }
+  }
+}

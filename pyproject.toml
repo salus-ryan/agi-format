@@ -1,0 +1,11 @@
+[project]
+name = "agi-format"
+version = "0.1.0"
+description = "A file format specification and runtime for self-describing AGI agent blueprints"
+requires-python = ">=3.12"
+dependencies = [
+    "structlog>=24.1.0",
+]
+
+[project.scripts]
+agi = "agi_cli:main"

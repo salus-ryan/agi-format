@@ -1,0 +1,42 @@
+{
+  "name": "theory_of_mind",
+  "description": "Theory of Mind module. Models other agents' beliefs, goals, knowledge states, and emotional states. Essential for communication, collaboration, and predicting behavior.",
+  "input_type": "AgentModel, State",
+  "output_type": "BeliefState",
+  "config": {
+    "agent_model_schema": {
+      "agent_id": "string",
+      "known_beliefs": "Fact[]",
+      "inferred_goals": "Goal[]",
+      "knowledge_level": {
+        "description": "Estimated knowledge state -- what does this agent know?",
+        "representation": "partial_knowledge_graph"
+      },
+      "communication_style": {
+        "formality": "float (0-1)",
+        "technical_level": "float (0-1)",
+        "preferred_modality": "text | voice | visual"
+      }
+    },
+    "capabilities": {
+      "belief_tracking": {
+        "description": "Track what other agents believe, including false beliefs",
+        "enabled": true
+      },
+      "goal_inference": {
+        "description": "Infer what other agents are trying to achieve from their actions",
+        "enabled": true
+      },
+      "knowledge_gap_detection": {
+        "description": "Identify what the other agent doesn't know but needs to",
+        "enabled": true
+      },
+      "deception_detection": {
+        "description": "Detect when communicated information conflicts with inferred beliefs",
+        "enabled": true
+      }
+    },
+    "max_recursive_depth": 3,
+    "description_recursive": "I think that you think that I think... (bounded to prevent infinite regress)"
+  }
+}

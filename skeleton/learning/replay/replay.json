@@ -1,0 +1,33 @@
+{
+  "name": "replay_buffer",
+  "description": "Experience replay buffer. Stores past experiences for offline learning. Prioritized replay ensures the agent learns most from surprising or high-reward experiences.",
+  "config": {
+    "capacity": {
+      "max_episodes": 100000,
+      "max_memory_mb": 2048,
+      "eviction_policy": "prioritized_fifo"
+    },
+    "prioritization": {
+      "type": "proportional",
+      "alpha": 0.6,
+      "beta_start": 0.4,
+      "beta_end": 1.0,
+      "beta_anneal_steps": 100000,
+      "priority_signals": ["td_error", "reward_magnitude", "novelty"]
+    },
+    "sampling": {
+      "batch_size": 32,
+      "min_episodes_before_sampling": 100,
+      "stratified": {
+        "enabled": true,
+        "description": "Ensure diverse sampling across goal types and outcome types",
+        "strata": ["goal_type", "success_or_failure", "domain"]
+      }
+    },
+    "storage": {
+      "path": "memory/replay_buffer.db",
+      "persistence": "periodic",
+      "flush_interval_episodes": 100
+    }
+  }
+}
