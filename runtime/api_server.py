@@ -1,10 +1,8 @@
 """FastAPI server for the .agi agent.
 
-Standalone module so it can be launched via `uvicorn runtime.api_server:create_app`.
-The app factory reads config from environment variables set by the Modal entrypoint.
+Standalone module launched via uvicorn. Reads config from environment variables.
 """
 
-import json
 import os
 import sys
 
@@ -29,10 +27,12 @@ log = structlog.get_logger()
 
 VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://127.0.0.1:8000")
 MODEL_NAME = os.environ.get("MODEL_NAME", "Qwen/Qwen3-8B")
+MODEL_REVISION = os.environ.get("MODEL_REVISION", "")
 MEMORY_PATH = os.environ.get("MEMORY_PATH", "/agent-memory")
 AGI_PACKAGE_PATH = os.environ.get("AGI_PACKAGE_PATH", "/app/skeleton")
 GPU = os.environ.get("GPU", "L4")
 API_PORT = int(os.environ.get("API_PORT", "8080"))
+LORA_ADAPTER_PATH = os.environ.get("LORA_ADAPTER_PATH", "/agent-memory/lora-adapter")
 
 # ── Request/Response models ──────────────────────────────────────────────────
 
@@ -49,7 +49,7 @@ class ChatResponse(BaseModel):
     state: dict
 
 
-# ── App factory ──────────────────────────────────────────────────────────────
+# ── Kernel ───────────────────────────────────────────────────────────────────
 
 _kernel = None
 
@@ -66,19 +66,21 @@ def get_kernel():
             package,
             vllm_base_url=VLLM_BASE_URL,
             model_name=MODEL_NAME,
+            model_revision=MODEL_REVISION,
             memory_path=MEMORY_PATH,
             gpu=GPU,
+            lora_adapter_path=LORA_ADAPTER_PATH,
         )
         log.info("kernel_initialized_on_first_request")
     return _kernel
 
 
-app = FastAPI(title="AGI Agent", version="0.1.0")
+# ── App ──────────────────────────────────────────────────────────────────────
+
+app = FastAPI(title="AGI Agent", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
 )
 
 
@@ -92,6 +94,7 @@ async def health():
         "gpu": GPU,
         "steps_completed": kernel.total_steps,
         "episodic_memories": len(kernel.memory_store),
+        "has_lora_adapter": kernel.lora_trainer.has_adapter if kernel.lora_trainer else False,
     }
 
 
@@ -104,9 +107,7 @@ async def status():
 async def chat(req: ChatRequest):
     kernel = get_kernel()
     result = await kernel.step_async(
-        req.message,
-        max_tokens=req.max_tokens,
-        temperature=req.temperature,
+        req.message, max_tokens=req.max_tokens, temperature=req.temperature,
     )
     return ChatResponse(
         response=result["response"],
@@ -142,11 +143,26 @@ async def geolocation():
 @app.get("/learning")
 async def learning():
     kernel = get_kernel()
-    return {
+    result = {
         "learner": kernel.learner.summary(),
         "consolidator": kernel.consolidator.summary(),
         "verification": kernel.verifier.summary(),
     }
+    if kernel.lora_trainer:
+        result["lora"] = kernel.lora_trainer.summary()
+    return result
+
+
+@app.post("/train")
+async def trigger_training():
+    """Manually trigger a LoRA training run."""
+    kernel = get_kernel()
+    if not kernel.lora_trainer:
+        return {"error": "LoRA trainer not configured"}
+    if kernel.lora_trainer.is_training:
+        return {"status": "already_training"}
+    result = await kernel.lora_trainer.train_async()
+    return result
 
 
 if __name__ == "__main__":

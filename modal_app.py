@@ -5,14 +5,16 @@ Serves an autonomous agent backed by Qwen3-8B via vLLM on an L4 GPU.
 The agent follows the .agi spec: perceive -> reason -> plan -> act -> learn.
 
 Architecture:
-  - vLLM subprocess on :8000 (internal, GPU inference)
+  - vLLM subprocess on :8000 (internal, GPU inference, LoRA-enabled)
   - FastAPI subprocess on :8080 (external, agent API)
+  - LoRA training runs in idle windows on the same GPU
   - Modal routes external traffic to :8080
 
 Deploy:   modal deploy modal_app.py
 Dev:      modal serve modal_app.py
 """
 
+import os
 import subprocess
 import time
 
@@ -31,10 +33,13 @@ GPU = "L4"
 VLLM_PORT = 8000
 API_PORT = 8080
 
-# ── Image ────────────────────────────────────────────────────────────────────
+# ── Paths ────────────────────────────────────────────────────────────────────
 
 HF_CACHE_PATH = "/root/.cache/huggingface/hub"
 MEMORY_PATH = "/agent-memory"
+LORA_ADAPTER_PATH = "/agent-memory/lora-adapter"
+
+# ── Image ────────────────────────────────────────────────────────────────────
 
 image = (
     modal.Image.from_registry(
@@ -48,6 +53,8 @@ image = (
         "structlog==24.4.0",
         "numpy<2",
         "uvicorn==0.34.3",
+        "peft==0.15.2",
+        "trl==0.18.1",
     )
     .env({
         "TORCH_CPP_LOG_LEVEL": "FATAL",
@@ -84,14 +91,21 @@ app = modal.App(name=APP_NAME)
 @modal.concurrent(max_inputs=10)
 @modal.web_server(port=API_PORT, startup_timeout=10 * MINUTES)
 def agent():
-    """Start vLLM (internal) + FastAPI agent server (external).
+    """Start vLLM (with LoRA) + FastAPI agent server.
 
-    Both are subprocess.Popen -- this function returns immediately
-    and Modal routes traffic to API_PORT.
+    vLLM runs at 85% GPU utilization to reserve ~3.6GB for LoRA training.
+    LoRA adapters are hot-loaded via the filesystem resolver.
     """
     import httpx
 
-    # 1. Start vLLM on internal port
+    # Ensure adapter directory exists
+    os.makedirs(LORA_ADAPTER_PATH, exist_ok=True)
+
+    # 1. Start vLLM with LoRA enabled, 85% VRAM (reserves ~3.6GB for training)
+    vllm_env = {
+        **os.environ,
+        "VLLM_ALLOW_RUNTIME_LORA_UPDATING": "true",
+    }
     vllm_cmd = [
         "vllm", "serve", MODEL_NAME,
         "--revision", MODEL_REVISION,
@@ -103,11 +117,14 @@ def agent():
         "--disable-log-requests",
         "--enforce-eager",
         "--max-model-len", "8192",
-        "--gpu-memory-utilization", "0.92",
+        "--gpu-memory-utilization", "0.85",   # 85% = reserves ~3.6GB for LoRA training
+        "--enable-lora",                       # enable LoRA adapter serving
+        "--max-lora-rank", "8",
+        "--max-loras", "2",
     ]
-    vllm_proc = subprocess.Popen(vllm_cmd)
+    vllm_proc = subprocess.Popen(vllm_cmd, env=vllm_env)
 
-    # Wait for vLLM health before starting the API
+    # Wait for vLLM health
     deadline = time.time() + 5 * MINUTES
     while time.time() < deadline:
         if (rc := vllm_proc.poll()) is not None:
@@ -120,17 +137,19 @@ def agent():
     else:
         raise TimeoutError("vLLM not ready within 5 minutes")
 
-    print(f"vLLM ready on :{VLLM_PORT}")
+    print(f"vLLM ready on :{VLLM_PORT} (LoRA enabled, 85% VRAM)")
 
-    # 2. Start FastAPI agent server on external port
+    # 2. Start FastAPI agent server
     api_env = {
-        **dict(__import__("os").environ),
+        **os.environ,
         "VLLM_BASE_URL": f"http://127.0.0.1:{VLLM_PORT}",
         "MODEL_NAME": MODEL_NAME,
+        "MODEL_REVISION": MODEL_REVISION,
         "MEMORY_PATH": MEMORY_PATH,
         "AGI_PACKAGE_PATH": "/app/skeleton",
         "GPU": GPU,
         "API_PORT": str(API_PORT),
+        "LORA_ADAPTER_PATH": LORA_ADAPTER_PATH,
     }
     api_cmd = [
         "python", "-m", "uvicorn",

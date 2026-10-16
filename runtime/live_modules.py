@@ -678,6 +678,7 @@ class LiveKernel:
         self, package: AGIPackage, vllm_base_url: str, model_name: str,
         memory_path: str, gpu: str = "L4",
         owner_org: str = "salus", owner_workspace: str = "salus",
+        model_revision: str = "", lora_adapter_path: str = "",
     ):
         self.package = package
         self.llm = LLMClient(vllm_base_url, model_name)
@@ -725,6 +726,22 @@ class LiveKernel:
         )
         self.learner = OnlineLearner(self.replay_buffer)
         self.consolidator = Consolidator(self.replay_buffer)
+
+        # LoRA trainer (real gradient updates on the same GPU)
+        self.lora_trainer = None
+        if lora_adapter_path and model_revision:
+            try:
+                from runtime.lora_trainer import LoRATrainer
+                self.lora_trainer = LoRATrainer(
+                    model_name=model_name,
+                    model_revision=model_revision,
+                    adapter_path=lora_adapter_path,
+                    replay_buffer=self.replay_buffer,
+                    min_experiences=20,
+                    retrain_interval=50,
+                )
+            except Exception as e:
+                log.warning("lora_trainer_init_failed", error=str(e))
 
         # Configs
         self.alignment_config = package.load_json("goals/alignment/alignment.json")
@@ -940,11 +957,23 @@ class LiveKernel:
         if self.total_steps % 20 == 0:
             self.consolidator.consolidate()
 
+        # LoRA training: check if we should train during this idle moment
+        lora_metrics = None
+        if self.lora_trainer and self.lora_trainer.should_train():
+            log.info("triggering_lora_training",
+                     replay_size=self.replay_buffer.size,
+                     training_count=self.lora_trainer.training_count)
+            try:
+                lora_metrics = await self.lora_trainer.train_async()
+            except Exception as e:
+                log.error("lora_training_error", error=str(e))
+
         step_log["events"].append({
             "phase": "learn", "reward": reward_total,
             "episodic_memories": len(self.memory_store),
             "procedures": len(self.procedural_memory.skills),
             "replay_size": self.replay_buffer.size,
+            "lora_training": lora_metrics,
         })
 
         # Update conversation
@@ -1180,6 +1209,7 @@ class LiveKernel:
                 "jurisdiction": self.geolocation.jurisdictional["primary_jurisdiction"],
                 "uptime_seconds": self.geolocation.temporal["uptime_seconds"],
             },
+            "lora": self.lora_trainer.summary() if self.lora_trainer else None,
         }
 
     def get_memories(self, limit: int = 50) -> list[dict]:
