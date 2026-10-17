@@ -155,17 +155,22 @@ redacted error responses.
 
 The reference tool runner provides defense in depth:
 
-- no `shell=True`;
-- command allowlists and shell-operator rejection;
-- a minimal subprocess environment with no inherited credentials;
+- process execution disabled by the starter package;
+- production mode rejects shell or Python tools unless OCI isolation is configured;
+- OCI images must be pinned by SHA-256 digest and already present locally;
+- OCI runs use no network, a read-only root, dropped capabilities, no-new-privileges,
+  PID/memory/CPU limits, a bounded temporary filesystem, and only the session workspace mount;
+- command allowlists, shell-operator rejection, and no `shell=True`;
+- bounded streaming capture prevents stdout/stderr memory exhaustion;
 - filesystem confinement using resolved paths;
-- CPU, memory, file, process, and descriptor limits on supported POSIX hosts;
-- deny-by-default networking with domain allowlists and private-address blocking;
-- no redirects, arbitrary ports, or POST requests by default;
-- Python execution disabled by default.
+- deny-by-default HTTP with domain allowlists and private-address blocking;
+- no redirects, arbitrary ports, or HTTP POST requests by default.
 
-For hostile workloads, place the entire runtime inside an additional container,
-microVM, or equivalent boundary with an egress proxy. See [`SECURITY.md`](SECURITY.md).
+The local subprocess backend exists for trusted development only. OCI isolation is materially
+stronger but is not a microVM boundary and inherits the security of the configured Docker or
+Podman daemon. For hostile multi-tenant workloads, use a dedicated worker container, microVM,
+or equivalent boundary with an egress proxy. See [`docs/OCI_ISOLATION.md`](docs/OCI_ISOLATION.md)
+and [`SECURITY.md`](SECURITY.md).
 
 ## Learning safety
 

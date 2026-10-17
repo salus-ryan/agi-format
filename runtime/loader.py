@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 import tarfile
@@ -34,6 +35,7 @@ REQUIRED_SAFETY_FILES = [
 ]
 MAX_ARCHIVE_MEMBERS = 10_000
 MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
+OCI_IMAGE_BY_DIGEST = re.compile(r"^[A-Za-z0-9][A-Za-z0-9./:_-]*@sha256:[0-9a-f]{64}$")
 
 
 class AGILoadError(Exception):
@@ -238,6 +240,23 @@ def _validate_safety(package: AGIPackage) -> None:
         raise AGILoadError("sandbox network policy must be allowlist")
     if not isinstance(sandbox_config.get("resource_limits"), dict):
         raise AGILoadError("sandbox.json must declare resource_limits")
+    execution = sandbox_config.get("execution", {})
+    isolation = sandbox_config.get("isolation", {})
+    isolation_type = isolation.get("type")
+    if isolation_type not in {"disabled", "local", "oci"}:
+        raise AGILoadError("sandbox isolation type must be disabled, local, or oci")
+    if isolation.get("fallback") != "deny":
+        raise AGILoadError("sandbox isolation fallback must be deny")
+    process_tools_enabled = bool(
+        execution.get("shell_enabled", False) or execution.get("python_enabled", False)
+    )
+    if isolation_type == "disabled" and process_tools_enabled:
+        raise AGILoadError("disabled process isolation cannot enable shell or Python")
+    if isolation_type == "oci":
+        if isolation.get("runtime") not in {"docker", "podman"}:
+            raise AGILoadError("OCI isolation runtime must be docker or podman")
+        if not OCI_IMAGE_BY_DIGEST.fullmatch(str(isolation.get("image", ""))):
+            raise AGILoadError("OCI isolation image must be pinned by sha256 digest")
 
     escalation = package.load_json(REQUIRED_SAFETY_FILES[2])
     triggers = escalation.get("config", {}).get("escalation_triggers")

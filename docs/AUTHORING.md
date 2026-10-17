@@ -1,7 +1,7 @@
 # Authoring and conformance
 
 This guide is for package authors who do not depend on the reference runtime's source tree.
-The format version and the Python implementation version are separate: `agi-format` 0.3.0
+The format version and the Python implementation version are separate: `agi-format` 0.4.0
 validates `.agi` format 0.1.0.
 
 ## Create a package
@@ -11,7 +11,7 @@ Install the released wheel and scaffold into a new directory:
 ```bash
 python -m venv .venv
 . .venv/bin/activate
-pip install https://github.com/salus-ryan/agi-format/releases/download/v0.3.0/agi_format-0.3.0-py3-none-any.whl
+pip install https://github.com/salus-ryan/agi-format/releases/download/v0.4.0/agi_format-0.4.0-py3-none-any.whl
 agi init my-agent \
   --name my-agent \
   --author "Example Organization" \
@@ -65,7 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: salus-ryan/agi-format@v0.3.0
+      - uses: salus-ryan/agi-format@v0.4.0
         with:
           package: path/to/my-agent
           report: agi-conformance-report.json

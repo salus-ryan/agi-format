@@ -2,7 +2,7 @@
 
 Capabilities are policy-bounded host implementations of declared package interfaces.
 
-  - Tool execution: shell, file I/O, web requests with sandboxed subprocesses
+  - Tool execution: deny-by-default capabilities with optional OCI-isolated processes
   - Planning: LLM generates candidate plans, world model simulates, best is selected
   - Grounding: LLM extracts entities from percepts into world model automatically
   - Memory: LLM-backed embeddings, episodic + procedural (reusable skill templates)
@@ -515,7 +515,7 @@ runtime policy and may be rejected or escalated.
 2. Reasoning -- you (Qwen3-8B), plus a causal world model and planning
 3. Memory -- episodic (vector store), procedural (learned skills), working (7 active slots)
 4. Language -- NLU/NLG with theory of mind (user model)
-5. Action -- real tool execution (shell, files, web, code) in a sandbox
+5. Action -- policy-gated tools; process execution requires an OCI isolation boundary
 6. Learning -- experience replay, successful approaches stored as reusable procedures
 7. Goals -- persistent goal stack, alignment constraints, escalation
 
@@ -547,6 +547,7 @@ class LiveKernel:
         execution = sandbox.get("execution", {})
         resource_limits = sandbox.get("resource_limits", {})
         network = sandbox.get("network", {})
+        isolation = sandbox.get("isolation", {})
         self.tool_policies = {
             tool["name"]: tool
             for tool in tool_registry.get("config", {}).get("tools", [])
@@ -562,6 +563,12 @@ class LiveKernel:
             network_post_enabled=False,
             timeout_seconds=min(resource_limits.get("max_cpu_seconds_per_action", 30), 60),
             max_memory_mb=min(resource_limits.get("max_memory_mb", 512), 2048),
+            process_isolation=isolation.get("type", "disabled"),
+            oci_runtime=isolation.get("runtime", "docker"),
+            oci_image=isolation.get("image", ""),
+            require_strong_isolation=(
+                os.environ.get("AGI_REQUIRE_STRONG_TOOL_ISOLATION", "true").lower() == "true"
+            ),
         )
         self.available_tools = sorted(self.tools.allowed_tools)
 

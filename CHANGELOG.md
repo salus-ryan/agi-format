@@ -5,6 +5,23 @@ The `.agi` format has an independent version declared in each package manifest.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-17
+
+### Added
+
+- Opt-in Docker/Podman process isolation with digest-pinned images, no network,
+  read-only roots, dropped capabilities, no-new-privileges, and resource limits.
+- Bounded streaming capture for child stdout and stderr, including explicit
+  truncation evidence and process-group termination on timeout.
+- Forced OCI container cleanup after an attached client timeout.
+
+### Changed
+
+- The starter package now truthfully declares process execution as disabled.
+- Production mode fails closed if a package enables shell or Python without OCI isolation.
+- Empty tool and command allowlists now remain empty instead of selecting defaults.
+- Sandbox toggles can no longer enable tools absent from the package tool registry.
+
 ## [0.3.0] - 2026-10-17
 
 ### Added
