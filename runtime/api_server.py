@@ -153,6 +153,25 @@ async def learning():
     return result
 
 
+@app.get("/knowledge")
+async def knowledge():
+    kernel = get_kernel()
+    return kernel.knowledge_graph.summary()
+
+
+@app.get("/knowledge/query")
+async def knowledge_query(q: str):
+    kernel = get_kernel()
+    facts = kernel.knowledge_graph.query_text(q)
+    return {"query": q, "facts": [f.to_dict() for f in facts[:20]]}
+
+
+@app.get("/dynamics")
+async def dynamics():
+    kernel = get_kernel()
+    return kernel.world_model.dynamics.summary()
+
+
 @app.post("/train")
 async def trigger_training():
     """Manually trigger a LoRA training run."""

@@ -101,6 +101,158 @@ PRODUCES = "produces"
 DEPENDS_ON = "depends_on"
 
 
+class DynamicsModel:
+    """Learned transition model: when action X is taken in state Y, what happens?
+
+    Learns from the replay buffer. Each transition is:
+      (state_features, action) -> (outcome_features, reward)
+
+    The model maintains transition counts and reward statistics for
+    (domain, tool) pairs, and uses these to predict outcomes for novel
+    action-state combinations. This is a tabular/Bayesian approach, not
+    neural -- it works with small data and gives calibrated uncertainties.
+    """
+
+    def __init__(self):
+        # Transition table: (domain, tool) -> list of observed outcomes
+        self.transitions: dict[str, list[dict]] = {}
+        # Reward statistics per (domain, tool)
+        self.reward_stats: dict[str, dict] = {}
+        self.total_transitions = 0
+
+    def record_transition(
+        self,
+        domain: str,
+        tool: str,
+        state_summary: str,
+        outcome: str,
+        reward: float,
+        success: bool,
+    ) -> None:
+        """Record an observed transition."""
+        key = f"{domain}:{tool}"
+        if key not in self.transitions:
+            self.transitions[key] = []
+            self.reward_stats[key] = {
+                "count": 0, "reward_sum": 0.0, "reward_sq_sum": 0.0,
+                "success_count": 0,
+            }
+
+        self.transitions[key].append({
+            "state": state_summary[:200],
+            "outcome": outcome[:200],
+            "reward": reward,
+            "success": success,
+        })
+        # Keep bounded
+        if len(self.transitions[key]) > 500:
+            self.transitions[key] = self.transitions[key][-500:]
+
+        stats = self.reward_stats[key]
+        stats["count"] += 1
+        stats["reward_sum"] += reward
+        stats["reward_sq_sum"] += reward * reward
+        if success:
+            stats["success_count"] += 1
+
+        self.total_transitions += 1
+
+    def predict_outcome(self, domain: str, tool: str) -> dict:
+        """Predict the outcome of taking an action (domain, tool).
+
+        Returns expected reward, success probability, variance, and
+        similar past outcomes.
+        """
+        key = f"{domain}:{tool}"
+        stats = self.reward_stats.get(key)
+        if not stats or stats["count"] == 0:
+            # No data -- return prior (uncertain)
+            return {
+                "expected_reward": 0.5,
+                "reward_variance": 0.25,
+                "success_probability": 0.5,
+                "confidence": 0.0,
+                "sample_count": 0,
+                "similar_outcomes": [],
+            }
+
+        n = stats["count"]
+        mean_reward = stats["reward_sum"] / n
+        variance = (stats["reward_sq_sum"] / n) - (mean_reward ** 2)
+        success_prob = stats["success_count"] / n
+        # Confidence grows with sqrt(n), capped at 1
+        confidence = min(1.0, (n / 50) ** 0.5)
+
+        # Recent similar outcomes
+        recent = self.transitions.get(key, [])[-5:]
+
+        return {
+            "expected_reward": round(mean_reward, 3),
+            "reward_variance": round(max(0, variance), 4),
+            "success_probability": round(success_prob, 3),
+            "confidence": round(confidence, 3),
+            "sample_count": n,
+            "similar_outcomes": [t["outcome"][:100] for t in recent],
+        }
+
+    def learn_from_replay(self, experiences: list) -> int:
+        """Bulk-load transitions from replay buffer experiences.
+
+        Returns the number of transitions loaded.
+        """
+        loaded = 0
+        for exp in experiences:
+            domain = self._classify_domain(exp.state_summary)
+            self.record_transition(
+                domain=domain,
+                tool=exp.action_tool,
+                state_summary=exp.state_summary,
+                outcome=exp.observation,
+                reward=exp.reward,
+                success=exp.reward > 0.3,
+            )
+            loaded += 1
+        return loaded
+
+    @staticmethod
+    def _classify_domain(text: str) -> str:
+        text_lower = text.lower()
+        if any(w in text_lower for w in ["code", "python", "function", "class", "bug"]):
+            return "coding"
+        if any(w in text_lower for w in ["math", "calculate", "equation"]):
+            return "math"
+        if any(w in text_lower for w in ["file", "read", "write", "path"]):
+            return "file_ops"
+        if any(w in text_lower for w in ["http", "url", "web", "api"]):
+            return "web"
+        if any(w in text_lower for w in ["shell", "command", "ls", "grep"]):
+            return "shell"
+        return "general"
+
+    def get_all_predictions(self) -> dict[str, dict]:
+        """Get predictions for all known (domain, tool) pairs."""
+        predictions = {}
+        for key in self.reward_stats:
+            domain, tool = key.split(":", 1)
+            predictions[key] = self.predict_outcome(domain, tool)
+        return predictions
+
+    def summary(self) -> dict:
+        return {
+            "total_transitions": self.total_transitions,
+            "known_pairs": len(self.reward_stats),
+            "top_performing": sorted(
+                [
+                    {"key": k, "mean_reward": round(s["reward_sum"] / max(1, s["count"]), 3),
+                     "count": s["count"]}
+                    for k, s in self.reward_stats.items()
+                ],
+                key=lambda x: x["mean_reward"],
+                reverse=True,
+            )[:5],
+        }
+
+
 class WorldModel:
     """Causal graph of the agent's understanding of the world.
 
@@ -114,6 +266,7 @@ class WorldModel:
         self.geolocation = geolocation
         self.persist_path = Path(persist_path) if persist_path else None
         self.inference_count = 0
+        self.dynamics = DynamicsModel()
 
         # Seed from geolocation
         self._seed_from_geolocation()
@@ -236,23 +389,39 @@ class WorldModel:
 
         self._save()
 
-    def predict(self, action_description: str) -> list[dict]:
+    def predict(self, action_description: str, tool: str = "communicate",
+                domain: str = "general") -> list[dict]:
         """Forward simulation: predict consequences of an action.
 
-        Uses the causal graph to trace likely effects.
+        Combines two sources:
+          1. Causal graph traversal (structural, from world knowledge)
+          2. Learned dynamics model (statistical, from past experience)
+
         Returns a list of predicted outcomes with confidence scores.
         """
         self.inference_count += 1
         predictions = []
 
-        # Find nodes related to concepts in the action
+        # Source 1: learned dynamics (empirical)
+        dynamics_prediction = self.dynamics.predict_outcome(domain, tool)
+        if dynamics_prediction["sample_count"] > 0:
+            predictions.append({
+                "entity": f"{domain}:{tool} outcome",
+                "type": "dynamics_prediction",
+                "expected_reward": dynamics_prediction["expected_reward"],
+                "success_probability": dynamics_prediction["success_probability"],
+                "confidence": dynamics_prediction["confidence"],
+                "similar_outcomes": dynamics_prediction["similar_outcomes"],
+                "source": "learned_dynamics",
+            })
+
+        # Source 2: causal graph traversal (structural)
         action_lower = action_description.lower()
         relevant_nodes = [
             n for n in self.nodes.values()
             if n.name.lower() in action_lower or action_lower in n.name.lower()
         ]
 
-        # Trace causal chains from relevant nodes
         for node in relevant_nodes:
             effects = self._trace_effects(node.id, depth=3)
             for effect_id, path, confidence in effects:
@@ -263,6 +432,7 @@ class WorldModel:
                         "type": effect_node.type,
                         "causal_path": path,
                         "confidence": confidence,
+                        "source": "causal_graph",
                     })
 
         # Always predict that regulations constrain actions
@@ -273,9 +443,12 @@ class WorldModel:
                 "type": "constraint",
                 "causal_path": ["action", "jurisdiction", reg.name],
                 "confidence": 0.9,
+                "source": "causal_graph",
             })
 
-        log.info("prediction", action=action_description[:50], predictions=len(predictions))
+        log.info("prediction", action=action_description[:50],
+                 predictions=len(predictions),
+                 dynamics_samples=dynamics_prediction["sample_count"])
         return predictions
 
     def explain(self, observation: str) -> list[dict]:
@@ -426,6 +599,7 @@ class WorldModel:
             "node_types": type_counts,
             "relation_types": relation_counts,
             "inference_count": self.inference_count,
+            "dynamics": self.dynamics.summary() if hasattr(self, "dynamics") else None,
         }
 
     def _save(self) -> None:

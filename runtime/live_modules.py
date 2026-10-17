@@ -27,6 +27,7 @@ import numpy as np
 import structlog
 
 from runtime.geolocation import GeoLocation
+from runtime.knowledge import KnowledgeGraph
 from runtime.learning import Consolidator, Experience, OnlineLearner, ReplayBuffer
 from runtime.loader import AGIPackage
 from runtime.perception import PerceptionPipeline
@@ -705,6 +706,9 @@ class LiveKernel:
         self.procedural_memory = ProceduralMemory(
             persist_path=f"{memory_path}/procedural_memory.json",
         )
+        self.knowledge_graph = KnowledgeGraph(
+            persist_path=f"{memory_path}/knowledge_graph.json",
+        )
         self.working_memory = WorkingMemory()
 
         # Theory of mind
@@ -788,12 +792,16 @@ class LiveKernel:
         step_log["events"].append({"phase": "perceive", "modality": "text",
                                     "length": len(user_input)})
 
-        # 2. GROUND -- extract entities from input into world model
+        # 2. GROUND -- extract entities into world model + facts into knowledge graph
         grounding_entities = await self._ground_input(user_input)
         if grounding_entities:
             self.world_model.observe(user_input, grounding_entities)
+        extracted_facts = await self.knowledge_graph.extract_facts_from_text(
+            user_input, self.llm.chat_async,
+        )
         step_log["events"].append({"phase": "ground",
-                                    "entities_extracted": len(grounding_entities)})
+                                    "entities_extracted": len(grounding_entities),
+                                    "facts_extracted": len(extracted_facts)})
 
         # 3. WORKING MEMORY -- attend to current input and recent context
         self.working_memory.attend(user_input, source="user_input", relevance=1.0)
@@ -801,15 +809,20 @@ class LiveKernel:
         if world_context:
             self.working_memory.attend(world_context[:300], source="world_model", relevance=0.6)
 
-        # 4. REMEMBER -- episodic + procedural
+        # 4. REMEMBER -- episodic + procedural + semantic (knowledge graph)
         relevant_memories = self.memory_store.search(user_input, top_k=3)
         memory_context = ""
         if relevant_memories:
             memory_lines = [f"- {m['text'][:200]}" for m in relevant_memories]
             memory_context = "## Episodic Memory\n" + "\n".join(memory_lines)
             self.working_memory.attend(memory_context[:300], source="episodic", relevance=0.5)
+        knowledge_context = self.knowledge_graph.get_context(user_input)
+        if knowledge_context:
+            memory_context += "\n\n" + knowledge_context
+            self.working_memory.attend(knowledge_context[:200], source="knowledge", relevance=0.4)
         step_log["events"].append({"phase": "remember",
-                                    "episodic_retrieved": len(relevant_memories)})
+                                    "episodic_retrieved": len(relevant_memories),
+                                    "knowledge_facts_relevant": len(self.knowledge_graph.query_text(user_input))})
 
         # 5. LEARN FROM PAST -- inject high-reward episodes into context
         good_episodes = self._get_learning_context()
@@ -1000,6 +1013,26 @@ class LiveKernel:
 
         domain = self._classify_domain(user_input)
         self.consolidator.record_performance(domain, reward_total)
+
+        # Record transition in dynamics model
+        tool_used = all_tool_results[0]["tool"] if all_tool_results else "communicate"
+        tool_success = all_tool_results[0].get("success", True) if all_tool_results else True
+        self.world_model.dynamics.record_transition(
+            domain=domain, tool=tool_used,
+            state_summary=user_input[:200],
+            outcome=final_response[:200],
+            reward=reward_total,
+            success=tool_success,
+        )
+
+        # Extract facts from the response into the knowledge graph
+        await self.knowledge_graph.extract_facts_from_text(
+            final_response, self.llm.chat_async,
+        )
+
+        # Periodic knowledge decay
+        if self.total_steps % 50 == 0:
+            self.knowledge_graph.decay()
 
         if self.learner.should_learn():
             self.learner.learn_step()
@@ -1261,6 +1294,7 @@ class LiveKernel:
             },
             "lora": self.lora_trainer.summary() if self.lora_trainer else None,
             "planner": self.planner.summary(),
+            "knowledge_graph": self.knowledge_graph.summary(),
         }
 
     def get_memories(self, limit: int = 50) -> list[dict]:

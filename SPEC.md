@@ -309,6 +309,61 @@ can contain:
 - Runtimes declare which format versions they support.
 - Agents declare minimum format version in `manifest.json`.
 
+## Reference Implementation
+
+The reference runtime (`runtime/`) provides a working implementation of all seven
+capabilities, deployed on Modal with Qwen3-8B via vLLM.
+
+### Runtime Architecture
+
+```
+input -> perceive -> ground -> remember -> plan_search -> reason -> verify -> align -> act -> learn
+           |           |          |            |              |         |        |        |       |
+        [multi-     [LLM       [episodic   [generate N   [Qwen3-8B [Z3/AST  [hard   [shell  [replay
+         modal]     entity     + semantic   candidates,   + world   + exec]  const.  file    buffer
+                    extract    + procedural simulate,              verify]  check]  web     + LoRA
+                    -> world   + knowledge  select best,                           code]   + dynamics
+                    model]     graph]       keep/discard]                                   + knowledge]
+```
+
+### Module Implementations
+
+| Module | Implementation | Key Details |
+|--------|---------------|-------------|
+| **Perception** | `perception.py` | Text (trigram + language detect), vision (SigLIP), audio (Whisper), structured (JSON) |
+| **Reasoning** | `live_modules.py` + `planner.py` | Qwen3-8B via vLLM. Plan search generates N candidates, simulates against world model, keeps or discards (autoresearch pattern). Multi-turn tool loop for iterative execution. |
+| **Memory** | `live_modules.py` + `knowledge.py` | Four subsystems: episodic (vector store, LLM-backed embeddings), semantic (SPO triple knowledge graph with conflict detection and decay), procedural (learned skill templates), working (7-slot bounded with relevance scoring and eviction) |
+| **Language** | `live_modules.py` | LLM-backed NLU/NLG with context injection: geolocation, world model, knowledge graph, working memory, user model, goal stack, procedural memory |
+| **Action** | `live_modules.py` | Real tool execution: shell, file_read, file_write, web_request, python_eval. Sandboxed (timeout, path restrictions, blocked commands). Escalation triggers evaluated on every tool call. |
+| **Learning** | `learning.py` + `lora_trainer.py` + `world_model.py` | Prioritized replay buffer (50K). LoRA training on shared GPU (85% inference / 15% training time-slice). Learned dynamics model (transition probabilities per domain/tool pair). Consolidator with domain regression detection. High-reward episodes promoted into prompt context. |
+| **Goals** | `live_modules.py` | Persistent goal stack with decomposition and subtask tracking. Hard alignment constraints checked on every response. Escalation enforcement on financial, system-modification, and external POST actions. |
+
+### Theory of Mind
+
+The runtime maintains an explicit `UserModel` tracking:
+- **Beliefs**: what the user believes to be true
+- **Knowledge**: user's areas of expertise
+- **Goals**: what the user is trying to accomplish
+- **Preferences**: communication style, detail level
+- **Frustrations**: things that caused negative reactions
+
+Updated by LLM analysis after each interaction.
+
+### World Model
+
+Three layers:
+1. **Causal graph** -- nodes (entities) and directed edges (causes, enables, constrains). Seeded from 5-dimensional geolocation (computational, jurisdictional, temporal, relational, informational). Grows through LLM-assisted entity extraction from every input.
+2. **Learned dynamics** -- tabular transition model: for each (domain, tool) pair, maintains observed outcome distributions, expected reward, success probability, and variance. Used by the planner to simulate candidate plans.
+3. **Semantic knowledge graph** -- SPO (subject, predicate, object) triples with provenance, confidence, conflict detection, and temporal decay. Queried during reasoning for relevant factual context.
+
+### Deployment
+
+- **Platform**: Modal (serverless GPU)
+- **GPU**: L4 (24GB VRAM), 85% inference / 15% reserved for LoRA training
+- **Model**: Qwen3-8B via vLLM with LoRA adapter hot-loading
+- **Memory**: Persistent volume for episodic memory, knowledge graph, replay buffer, goal stack, and LoRA adapters
+- **API**: FastAPI on port 8080, endpoints for chat, health, status, memory, knowledge, dynamics, world model, learning, and manual training trigger
+
 ## MIME Type
 
 `application/x-agi`
