@@ -152,7 +152,7 @@ class OCIIsolation:
             "--cpus=1",
             f"--user={os.getuid()}:{os.getgid()}",
             "--tmpfs=/tmp:rw,noexec,nosuid,size=16m",
-            f"--mount=type=bind,src={self.workspace},dst=/workspace,rw",
+            f"--mount=type=bind,src={self.workspace},dst=/workspace",
             "--workdir=/workspace",
             self.image,
             *mapped,
