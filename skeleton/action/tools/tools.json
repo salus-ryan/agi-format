@@ -4,8 +4,8 @@
   "config": {
     "discovery": {
       "static_tools": "defined below",
-      "dynamic_discovery": true,
-      "description": "Agent can discover and learn to use new tools through exploration"
+      "dynamic_discovery": false,
+      "description": "The reference runtime only enables tools declared here and permitted by sandbox.json"
     },
     "tools": [
       {
@@ -22,7 +22,7 @@
           "exit_code": "integer"
         },
         "sandbox_level": "strict",
-        "requires_approval": false
+        "requires_approval": true
       },
       {
         "name": "file_read",

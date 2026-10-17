@@ -38,9 +38,14 @@
       "description": "Surprise = divergence between predicted and actual outcome"
     },
     "safeguards": {
+      "enabled_by_default": false,
+      "minimum_reward": 0.6,
+      "validation_fraction": 0.2,
+      "max_validation_loss_regression": 0.02,
       "max_weight_change_per_update": 0.01,
       "validation_on_held_out": true,
-      "rollback_on_degradation": true
+      "rollback_on_degradation": true,
+      "retain_adapter_versions": 3
     }
   }
 }

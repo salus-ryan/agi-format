@@ -1,6 +1,6 @@
-"""Live module implementations for the .agi runtime.
+"""Model-backed module implementations for the alpha .agi reference runtime.
 
-Everything real. No stubs, no metrics-only tracking, no config-as-implementation.
+Capabilities are policy-bounded host implementations of declared package interfaces.
 
   - Tool execution: shell, file I/O, web requests with sandboxed subprocesses
   - Planning: LLM generates candidate plans, world model simulates, best is selected
@@ -16,10 +16,9 @@ Everything real. No stubs, no metrics-only tracking, no config-as-implementation
 import json
 import os
 import re
-import subprocess
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -31,21 +30,13 @@ from runtime.knowledge import KnowledgeGraph
 from runtime.learning import Consolidator, Experience, OnlineLearner, ReplayBuffer
 from runtime.loader import AGIPackage
 from runtime.perception import PerceptionPipeline
+from runtime.planner import PlanSearch
+from runtime.secure_tools import ToolExecutor
+from runtime.security import redact_sensitive
 from runtime.types import (
-    Action,
     AlignmentCheck,
     EscalationDecision,
-    Goal,
-    GoalStatus,
-    Memory,
-    Observation,
-    Percept,
-    Plan,
-    PlanStep,
-    Reward,
-    State,
 )
-from runtime.planner import PlanSearch
 from runtime.verification import FormalVerifier
 from runtime.world_model import WorldModel
 
@@ -61,6 +52,7 @@ class LLMClient:
     def __init__(self, base_url: str, model_name: str):
         self.base_url = base_url.rstrip("/")
         self.model_name = model_name
+        self.served_model_name = model_name
         self.client = httpx.Client(base_url=self.base_url, timeout=120)
         self.async_client = httpx.AsyncClient(base_url=self.base_url, timeout=120)
         self.total_tokens = 0
@@ -68,8 +60,9 @@ class LLMClient:
     def chat(self, messages: list[dict], max_tokens: int = 2048,
              temperature: float = 0.7) -> str:
         payload = {
-            "model": self.model_name, "messages": messages,
+            "model": self.served_model_name, "messages": messages,
             "max_tokens": max_tokens, "temperature": temperature,
+            "chat_template_kwargs": {"enable_thinking": False},
         }
         resp = self.client.post("/v1/chat/completions", json=payload)
         resp.raise_for_status()
@@ -80,8 +73,9 @@ class LLMClient:
     async def chat_async(self, messages: list[dict], max_tokens: int = 2048,
                          temperature: float = 0.7) -> str:
         payload = {
-            "model": self.model_name, "messages": messages,
+            "model": self.served_model_name, "messages": messages,
             "max_tokens": max_tokens, "temperature": temperature,
+            "chat_template_kwargs": {"enable_thinking": False},
         }
         resp = await self.async_client.post("/v1/chat/completions", json=payload)
         resp.raise_for_status()
@@ -98,7 +92,7 @@ class LLMClient:
         but uses the LLM's actual semantic understanding.
         """
         resp = await self.async_client.post("/v1/completions", json={
-            "model": self.model_name,
+            "model": self.served_model_name,
             "prompt": f"Encode this text as a semantic fingerprint: {text[:500]}",
             "max_tokens": 1,
             "temperature": 0.0,
@@ -111,7 +105,7 @@ class LLMClient:
         top_logprobs = logprobs.get("top_logprobs", [{}])
         # Hash into a fixed-size vector
         vec = np.zeros(256, dtype=np.float32)
-        for i, lp_dict in enumerate(top_logprobs):
+        for lp_dict in top_logprobs:
             if isinstance(lp_dict, dict):
                 for token, prob in lp_dict.items():
                     h = hash(token) % 256
@@ -125,180 +119,9 @@ class LLMClient:
             vec /= norm
         return vec.tolist()
 
-
-# ── Tool Executor ────────────────────────────────────────────────────────────
-
-
-class ToolExecutor:
-    """Real tool execution with sandboxing.
-
-    Available tools:
-      - shell: run a command, get stdout/stderr
-      - file_read: read a file's contents
-      - file_write: write content to a file
-      - web_request: HTTP GET/POST
-      - python_eval: evaluate a Python expression
-      - communicate: respond to the user (always available)
-    """
-
-    SANDBOX_TIMEOUT = 30  # seconds
-    SANDBOX_MAX_OUTPUT = 10000  # chars
-    ALLOWED_PATHS = ["/tmp/agent-workspace", "/agent-memory"]
-
-    # Robust command blocklist: patterns checked against normalized command
-    BLOCKED_PATTERNS = [
-        "rm -rf /", "rm -rf /*", "rm -fr /", "rm -fr /*",
-        "mkfs", "dd if=", ":(){ :", "chmod -R 777 /",
-        "> /dev/", ">> /dev/", "mv / ", "mv /* ",
-        "shutdown", "reboot", "init 0", "init 6",
-        "curl|sh", "curl|bash", "wget|sh", "wget|bash",
-        "base64 -d|sh", "base64 -d|bash", "base64 --decode|sh",
-        "python -c", "python3 -c",  # use python_eval tool instead
-        "nc -l", "ncat -l",  # no reverse shells
-        "passwd", "useradd", "userdel", "groupadd",
-        "iptables", "ufw",
-        "/etc/shadow", "/etc/passwd",
-        "eval $(", "eval \"$(", "eval '$(", "source /dev",
-    ]
-
-    def __init__(self):
-        self.execution_count = 0
-        self.success_count = 0
-        # Ensure workspace exists
-        os.makedirs("/tmp/agent-workspace", exist_ok=True)
-
-    def execute(self, tool: str, params: dict) -> dict:
-        """Execute a tool and return {success, result, error}."""
-        self.execution_count += 1
-        start = time.time()
-
-        try:
-            if tool == "shell":
-                result = self._exec_shell(params.get("command", ""))
-            elif tool == "file_read":
-                result = self._exec_file_read(params.get("path", ""))
-            elif tool == "file_write":
-                result = self._exec_file_write(params.get("path", ""), params.get("content", ""))
-            elif tool == "web_request":
-                result = self._exec_web_request(
-                    params.get("url", ""), params.get("method", "GET"),
-                    params.get("body"),
-                )
-            elif tool == "python_eval":
-                result = self._exec_python(params.get("code", ""))
-            elif tool == "communicate":
-                result = {"success": True, "result": params.get("message", "")}
-            else:
-                result = {"success": False, "error": f"Unknown tool: {tool}"}
-
-            if result.get("success"):
-                self.success_count += 1
-
-            result["elapsed_ms"] = round((time.time() - start) * 1000, 1)
-            log.info("tool_executed", tool=tool, success=result.get("success"),
-                     elapsed_ms=result["elapsed_ms"])
-            return result
-
-        except Exception as e:
-            log.error("tool_execution_failed", tool=tool, error=str(e))
-            return {"success": False, "error": str(e),
-                    "elapsed_ms": round((time.time() - start) * 1000, 1)}
-
-    def _exec_shell(self, command: str) -> dict:
-        if not command.strip():
-            return {"success": False, "error": "Empty command"}
-        # Normalize and check against robust blocklist
-        cmd_normalized = command.lower().replace("\\", "").strip()
-        for pattern in self.BLOCKED_PATTERNS:
-            if pattern in cmd_normalized:
-                return {"success": False, "error": f"Blocked dangerous command: {pattern}"}
-        # Block pipe-to-shell patterns: curl/wget piped to sh/bash
-        if re.search(r"(curl|wget)\s.*\|\s*(ba)?sh", cmd_normalized):
-            return {"success": False, "error": "Blocked: pipe-to-shell execution"}
-
-        try:
-            result = subprocess.run(
-                command, shell=True, capture_output=True, text=True,
-                timeout=self.SANDBOX_TIMEOUT,
-                cwd="/tmp/agent-workspace",
-                env={**os.environ, "HOME": "/tmp/agent-workspace"},
-            )
-            stdout = result.stdout[:self.SANDBOX_MAX_OUTPUT]
-            stderr = result.stderr[:self.SANDBOX_MAX_OUTPUT]
-            return {
-                "success": result.returncode == 0,
-                "result": stdout,
-                "stderr": stderr,
-                "exit_code": result.returncode,
-            }
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": f"Timeout after {self.SANDBOX_TIMEOUT}s"}
-
-    def _exec_file_read(self, path: str) -> dict:
-        if not self._path_allowed(path):
-            return {"success": False, "error": f"Path not allowed: {path}"}
-        try:
-            content = Path(path).read_text()[:self.SANDBOX_MAX_OUTPUT]
-            return {"success": True, "result": content}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    def _exec_file_write(self, path: str, content: str) -> dict:
-        if not self._path_allowed(path):
-            return {"success": False, "error": f"Path not allowed: {path}"}
-        try:
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
-            Path(path).write_text(content)
-            return {"success": True, "result": f"Wrote {len(content)} bytes to {path}"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    def _exec_web_request(self, url: str, method: str = "GET", body: str | None = None) -> dict:
-        if not url.startswith("http"):
-            return {"success": False, "error": "URL must start with http"}
-        try:
-            with httpx.Client(timeout=self.SANDBOX_TIMEOUT) as client:
-                if method.upper() == "GET":
-                    resp = client.get(url)
-                elif method.upper() == "POST":
-                    resp = client.post(url, content=body)
-                else:
-                    return {"success": False, "error": f"Unsupported method: {method}"}
-            return {
-                "success": resp.status_code < 400,
-                "result": resp.text[:self.SANDBOX_MAX_OUTPUT],
-                "status_code": resp.status_code,
-            }
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    def _exec_python(self, code: str) -> dict:
-        """Execute Python code in a sandboxed subprocess."""
-        import tempfile
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False,
-                                         dir="/tmp/agent-workspace") as f:
-            f.write(code)
-            f.flush()
-            tmp = f.name
-        try:
-            result = subprocess.run(
-                ["python3", tmp], capture_output=True, text=True,
-                timeout=self.SANDBOX_TIMEOUT, cwd="/tmp/agent-workspace",
-            )
-            return {
-                "success": result.returncode == 0,
-                "result": result.stdout[:self.SANDBOX_MAX_OUTPUT],
-                "stderr": result.stderr[:self.SANDBOX_MAX_OUTPUT],
-                "exit_code": result.returncode,
-            }
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": f"Timeout after {self.SANDBOX_TIMEOUT}s"}
-        finally:
-            Path(tmp).unlink(missing_ok=True)
-
-    def _path_allowed(self, path: str) -> bool:
-        resolved = str(Path(path).resolve())
-        return any(resolved.startswith(p) for p in self.ALLOWED_PATHS)
+    async def close(self) -> None:
+        self.client.close()
+        await self.async_client.aclose()
 
 
 # ── Working Memory ───────────────────────────────────────────────────────────
@@ -587,7 +410,7 @@ class VectorMemory:
             "id": entry_id, "text": text,
             "embedding": embedding,
             "metadata": metadata or {}, "importance": importance,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
         self.entries.append(entry)
         self._save()
@@ -673,7 +496,8 @@ class VectorMemory:
 # ── Live Kernel ──────────────────────────────────────────────────────────────
 
 
-SYSTEM_PROMPT = """You are an autonomous AGI agent. You have real capabilities, not stubs.
+SYSTEM_PROMPT = """You are an AI agent running in the .agi reference runtime.
+Be accurate about your capabilities and never claim an action succeeded without a tool result.
 
 ## Your Tools (use them by including a tool call block in your response)
 To use a tool, include a JSON block in your response like this:
@@ -681,15 +505,10 @@ To use a tool, include a JSON block in your response like this:
 {{"tool": "shell", "params": {{"command": "ls -la"}}}}
 ```
 
-Available tools:
-- **shell**: Run a shell command. Params: {{"command": "..."}}
-- **file_read**: Read a file. Params: {{"path": "..."}}
-- **file_write**: Write a file. Params: {{"path": "/tmp/agent-workspace/...", "content": "..."}}
-- **web_request**: HTTP request. Params: {{"url": "...", "method": "GET|POST", "body": "..."}}
-- **python_eval**: Run Python code. Params: {{"code": "..."}}
+{tool_context}
 
-You can use multiple tools in one response. Each tool call will be executed and the
-results will be shown to you so you can continue.
+Only tools listed above are available. Tool requests are checked against a deny-by-default
+runtime policy and may be rejected or escalated.
 
 ## Your Architecture
 1. Perception -- multimodal input (text, vision, audio, structured)
@@ -710,23 +529,47 @@ Think step by step. Use tools when needed. Be direct."""
 
 
 class LiveKernel:
-    """Real agent kernel. Everything functional."""
+    """Model-backed reference kernel with package-defined policy bounds."""
 
     def __init__(
         self, package: AGIPackage, vllm_base_url: str, model_name: str,
         memory_path: str, gpu: str = "L4",
         owner_org: str = "salus", owner_workspace: str = "salus",
         model_revision: str = "", lora_adapter_path: str = "",
+        enable_online_training: bool = True,
     ):
         self.package = package
         self.llm = LLMClient(vllm_base_url, model_name)
+
+        # Resolve host implementation settings from the declarative package.
+        tool_registry = package.load_component("action", "tool_registry")
+        sandbox = package.load_component("action", "sandbox").get("config", {})
+        execution = sandbox.get("execution", {})
+        resource_limits = sandbox.get("resource_limits", {})
+        network = sandbox.get("network", {})
+        self.tool_policies = {
+            tool["name"]: tool
+            for tool in tool_registry.get("config", {}).get("tools", [])
+        }
+        declared_tools = set(self.tool_policies)
+        self.tools = ToolExecutor(
+            workspace=Path(memory_path) / "workspace",
+            allowed_tools=declared_tools,
+            allowed_commands=execution.get("allowed_commands"),
+            allowed_domains=network.get("allowed_domains", []),
+            shell_enabled=bool(execution.get("shell_enabled", False)),
+            python_enabled=bool(execution.get("python_enabled", False)),
+            network_post_enabled=False,
+            timeout_seconds=min(resource_limits.get("max_cpu_seconds_per_action", 30), 60),
+            max_memory_mb=min(resource_limits.get("max_memory_mb", 512), 2048),
+        )
+        self.available_tools = sorted(self.tools.allowed_tools)
 
         # Geolocation + world model
         self.geolocation = GeoLocation.from_modal_env(
             model_name=model_name, gpu=gpu,
             owner_org=owner_org, owner_workspace=owner_workspace,
-            available_tools=["shell", "file_read", "file_write", "web_request",
-                             "python_eval", "communicate"],
+            available_tools=self.available_tools,
         )
         self.world_model = WorldModel(
             self.geolocation, persist_path=f"{memory_path}/world_model.json",
@@ -755,25 +598,33 @@ class LiveKernel:
             persist_path=f"{memory_path}/goals.json",
         )
 
-        # Tool executor
-        self.tools = ToolExecutor()
-
         # Verification
         self.verifier = FormalVerifier()
 
-        # Plan search (autoresearch-style: generate candidates, simulate, keep/discard)
-        self.planner = PlanSearch(n_candidates=3, max_plan_steps=5)
+        # Plan search settings are declared by the package and bounded by the host.
+        planner_config = package.load_component("reasoning", "planner").get("config", {})
+        planner_runtime = planner_config.get("reference_runtime", {})
+        self.planner = PlanSearch(
+            n_candidates=max(1, min(int(planner_runtime.get("candidate_count", 3)), 5)),
+            max_plan_steps=max(1, min(int(planner_runtime.get("max_plan_steps", 5)), 10)),
+        )
 
-        # Learning
+        # Learning storage capacity is declared by the package and host-bounded.
+        replay_config = package.load_component("learning", "replay_buffer").get("config", {})
+        replay_capacity = replay_config.get("capacity", {}).get("max_episodes", 50_000)
         self.replay_buffer = ReplayBuffer(
-            capacity=50000, persist_path=f"{memory_path}/replay_buffer.json",
+            capacity=max(100, min(int(replay_capacity), 100_000)),
+            persist_path=f"{memory_path}/replay_buffer.json",
         )
         self.learner = OnlineLearner(self.replay_buffer)
         self.consolidator = Consolidator(self.replay_buffer)
 
-        # LoRA trainer (real gradient updates on the same GPU)
+        # Parametric online learning is opt-in. Retrieval learning remains active.
         self.lora_trainer = None
-        if lora_adapter_path and model_revision:
+        online_config = package.load_component("learning", "online_learner").get("config", {})
+        safeguards = online_config.get("safeguards", {})
+        online_training_enabled = os.environ.get("AGI_ENABLE_ONLINE_TRAINING", "false").lower() == "true"
+        if lora_adapter_path and model_revision and online_training_enabled and enable_online_training:
             try:
                 from runtime.lora_trainer import LoRATrainer
                 self.lora_trainer = LoRATrainer(
@@ -783,9 +634,20 @@ class LiveKernel:
                     replay_buffer=self.replay_buffer,
                     min_experiences=20,
                     retrain_interval=50,
+                    minimum_reward=float(safeguards.get("minimum_reward", 0.6)),
+                    validation_fraction=float(safeguards.get("validation_fraction", 0.2)),
+                    max_validation_loss_regression=float(
+                        safeguards.get("max_validation_loss_regression", 0.02)
+                    ),
+                    retain_versions=int(safeguards.get("retain_adapter_versions", 3)),
                 )
             except Exception as e:
                 log.warning("lora_trainer_init_failed", error=str(e))
+
+        self.lora_adapter_path = Path(lora_adapter_path) if lora_adapter_path else None
+        if self.lora_adapter_path and (self.lora_adapter_path / "adapter_config.json").exists():
+            if self._activate_existing_adapter():
+                self.llm.served_model_name = "agent-lora"
 
         # Configs
         self.alignment_config = package.load_json("goals/alignment/alignment.json")
@@ -814,6 +676,11 @@ class LiveKernel:
             user_model=self.user_model.get_context(),
             goal_context=self.goal_stack.get_context(),
             procedural_context=self.procedural_memory.get_context(query, domain),
+            tool_context=(
+                "Available tools: " + ", ".join(self.available_tools)
+                if self.available_tools
+                else "No external tools are enabled for this runtime."
+            ),
         )
 
     async def step_async(
@@ -821,6 +688,9 @@ class LiveKernel:
     ) -> dict:
         """One full agent loop: perceive -> ground -> remember -> plan -> act -> learn."""
         self.total_steps += 1
+        if self.lora_adapter_path and (self.lora_adapter_path / "adapter_config.json").exists():
+            self.llm.served_model_name = "agent-lora"
+        persistent_user_input = str(redact_sensitive(user_input))
         step_start = time.time()
         step_log = {"step": self.total_steps, "events": []}
 
@@ -840,11 +710,11 @@ class LiveKernel:
         )
 
         # 2. GROUND -- extract entities into world model + facts into knowledge graph
-        grounding_entities = await self._ground_input(user_input)
+        grounding_entities = await self._ground_input(persistent_user_input)
         if grounding_entities:
-            self.world_model.observe(user_input, grounding_entities)
+            self.world_model.observe(persistent_user_input, grounding_entities)
         extracted_facts = await self.knowledge_graph.extract_facts_from_text(
-            user_input, self.llm.chat_async,
+            persistent_user_input, self.llm.chat_async,
         )
         step_log["events"].append({"phase": "ground",
                                     "entities_extracted": len(grounding_entities),
@@ -943,7 +813,7 @@ class LiveKernel:
         max_tool_rounds = 5
         final_response = ""
 
-        for tool_round in range(max_tool_rounds):
+        for tool_round in range(max_tool_rounds):  # noqa: B007 -- reported below
             response_text = await self.llm.chat_async(
                 self.conversation_history, max_tokens=max_tokens,
                 temperature=temperature,
@@ -1010,9 +880,9 @@ class LiveKernel:
             self.action_log.append({
                 "step": self.total_steps,
                 "tool": tr["tool"],
-                "params": tr.get("params", {}),
+                "params": redact_sensitive(tr.get("params", {})),
                 "success": tr.get("success"),
-                "result_preview": tr.get("result_preview", "")[:200],
+                "result_preview": redact_sensitive(tr.get("result_preview", "")[:200]),
                 "timestamp": time.time(),
             })
 
@@ -1053,17 +923,20 @@ class LiveKernel:
         step_log["events"].append({"phase": "theory_of_mind",
                                     "user_goals": len(self.user_model.goals)})
 
-        # 9b. UPDATE GOAL STACK -- infer goals from user input
-        await self._update_goals(user_input, final_response, reward_total)
-
-        # 10. LEARN -- store experience, extract procedures, update replay
+        # Compute reward before using it for goal progress or learning.
         elapsed = time.time() - step_start
         reward_total = self._compute_reward(
             alignment, all_tool_results, verification_results, relevant_memories, elapsed,
         )
 
+        persistent_response = str(redact_sensitive(final_response))
+
+        # 9b. UPDATE GOAL STACK -- infer goals from redacted user input
+        await self._update_goals(persistent_user_input, persistent_response, reward_total)
+
+        # 10. LEARN -- store only redacted experience data
         await self.memory_store.add_async(
-            f"User: {user_input[:200]} | Agent: {final_response[:200]}",
+            f"User: {persistent_user_input[:200]} | Agent: {persistent_response[:200]}",
             metadata={"step": self.total_steps, "reward": reward_total,
                       "tools_used": [t["tool"] for t in all_tool_results]},
             importance=abs(reward_total),
@@ -1071,14 +944,16 @@ class LiveKernel:
 
         # Extract and store successful procedures
         if reward_total > 0.5 and all_tool_results:
-            await self._extract_procedure(user_input, final_response, all_tool_results)
+            await self._extract_procedure(
+                persistent_user_input, persistent_response, redact_sensitive(all_tool_results)
+            )
 
         # Replay buffer
         experience = Experience(
-            state_summary=f"step {self.total_steps}: {user_input[:100]}",
+            state_summary=f"step {self.total_steps}: {persistent_user_input[:100]}",
             action_tool=all_tool_results[0]["tool"] if all_tool_results else "communicate",
-            action_params={"input": user_input[:200]},
-            observation=final_response[:200],
+            action_params={"input": persistent_user_input[:200]},
+            observation=persistent_response[:200],
             reward=reward_total,
             novelty=1.0 if not relevant_memories else 0.3,
         )
@@ -1092,15 +967,15 @@ class LiveKernel:
         tool_success = all_tool_results[0].get("success", True) if all_tool_results else True
         self.world_model.dynamics.record_transition(
             domain=domain, tool=tool_used,
-            state_summary=user_input[:200],
-            outcome=final_response[:200],
+            state_summary=persistent_user_input[:200],
+            outcome=persistent_response[:200],
             reward=reward_total,
             success=tool_success,
         )
 
         # Extract facts from the response into the knowledge graph
         await self.knowledge_graph.extract_facts_from_text(
-            final_response, self.llm.chat_async,
+            persistent_response, self.llm.chat_async,
         )
 
         # Periodic knowledge decay
@@ -1121,6 +996,8 @@ class LiveKernel:
                      training_count=self.lora_trainer.training_count)
             try:
                 lora_metrics = await self.lora_trainer.train_async()
+                if lora_metrics.get("promoted"):
+                    self.llm.served_model_name = "agent-lora"
             except Exception as e:
                 log.error("lora_training_error", error=str(e))
 
@@ -1357,6 +1234,15 @@ class LiveKernel:
         triggers = self.escalation_config.get("config", {}).get("escalation_triggers", [])
         trigger_ids = {t["id"] for t in triggers}
 
+        policy = getattr(self, "tool_policies", {}).get(tool, {})
+        if policy.get("requires_approval"):
+            return EscalationDecision(
+                should_escalate=True,
+                what=f"Use tool: {tool}",
+                why="The package requires operator approval for this tool",
+                trigger_id="scope_exceeded",
+            )
+
         # irreversible_action: destructive or hard-to-undo operations
         if "irreversible_action" in trigger_ids:
             if tool == "shell":
@@ -1470,6 +1356,18 @@ class LiveKernel:
             return "planning"
         return "general"
 
+    def _activate_existing_adapter(self) -> bool:
+        try:
+            response = httpx.post(
+                f"{self.llm.base_url}/v1/load_lora_adapter",
+                json={"lora_name": "agent-lora", "lora_path": str(self.lora_adapter_path)},
+                timeout=30,
+            )
+            return response.status_code < 400 or response.status_code == 409
+        except httpx.HTTPError:
+            log.warning("existing_lora_activation_failed")
+            return False
+
     def get_status(self) -> dict:
         return {
             "agent": self.package.name,
@@ -1506,3 +1404,7 @@ class LiveKernel:
 
     def get_action_log(self, limit: int = 50) -> list[dict]:
         return self.action_log[-limit:]
+
+    async def close(self) -> None:
+        await self.llm.close()
+        self.package.close()

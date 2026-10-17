@@ -13,7 +13,7 @@ Everything in the world model is conditioned on this state.
 import os
 import platform
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 
@@ -103,7 +103,7 @@ class GeoLocation:
     @property
     def temporal(self) -> dict:
         """Temporal location is always computed live."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return {
             "utc_now": now.isoformat(),
             "unix_timestamp": time.time(),

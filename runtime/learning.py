@@ -11,8 +11,6 @@ forgetting.
 """
 
 import json
-import math
-import random
 import time
 import uuid
 from pathlib import Path
@@ -158,7 +156,7 @@ class ReplayBuffer:
     def update_priorities(self, experience_ids: list[str], new_td_errors: list[float]) -> None:
         """Update priorities after learning."""
         id_to_idx = {self.buffer[i].id: i for i in range(self.size)}
-        for eid, td in zip(experience_ids, new_td_errors):
+        for eid, td in zip(experience_ids, new_td_errors, strict=True):
             if eid in id_to_idx:
                 idx = id_to_idx[eid]
                 self.buffer[idx].td_error = td

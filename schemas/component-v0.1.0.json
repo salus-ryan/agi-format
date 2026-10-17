@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/salus-ryan/agi-format/main/schemas/component-v0.1.0.json",
+  "title": ".agi component configuration v0.1.0",
+  "type": "object",
+  "required": ["name", "description"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {"type": "string", "minLength": 1, "maxLength": 128},
+    "description": {"type": "string", "maxLength": 4096},
+    "input_type": {"type": "string", "maxLength": 512},
+    "output_type": {"type": "string", "maxLength": 512},
+    "config": {"type": "object"}
+  }
+}

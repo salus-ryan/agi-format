@@ -1,9 +1,9 @@
 """Tests for the .agi loader and CLI."""
 
 import subprocess
+import sys
 
 from runtime.loader import load_agi
-
 
 SKELETON_PATH = "skeleton"
 
@@ -34,28 +34,28 @@ class TestLoader:
 class TestCLI:
     def test_validate(self):
         result = subprocess.run(
-            ["python3", "agi_cli.py", "validate", SKELETON_PATH],
+            [sys.executable, "agi_cli.py", "validate", SKELETON_PATH],
             capture_output=True, text=True,
         )
         assert result.returncode == 0
 
     def test_inspect(self):
         result = subprocess.run(
-            ["python3", "agi_cli.py", "inspect", SKELETON_PATH],
+            [sys.executable, "agi_cli.py", "inspect", SKELETON_PATH],
             capture_output=True, text=True,
         )
         assert result.returncode == 0
         assert "skeleton-agent" in result.stdout
 
     def test_pack_and_unpack(self):
-        import tempfile
         import os
+        import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
             agi_path = os.path.join(tmpdir, "test.agi")
             # Pack
             result = subprocess.run(
-                ["python3", "agi_cli.py", "pack", SKELETON_PATH, "-o", agi_path],
+                [sys.executable, "agi_cli.py", "pack", SKELETON_PATH, "-o", agi_path],
                 capture_output=True, text=True,
             )
             assert result.returncode == 0
@@ -64,7 +64,7 @@ class TestCLI:
             # Unpack
             unpack_dir = os.path.join(tmpdir, "unpacked")
             result = subprocess.run(
-                ["python3", "agi_cli.py", "unpack", agi_path, "-o", unpack_dir],
+                [sys.executable, "agi_cli.py", "unpack", agi_path, "-o", unpack_dir],
                 capture_output=True, text=True,
             )
             assert result.returncode == 0

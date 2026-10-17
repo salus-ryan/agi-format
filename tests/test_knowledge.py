@@ -1,6 +1,6 @@
 """Tests for the semantic knowledge graph."""
 
-from runtime.knowledge import KnowledgeGraph, Fact
+from runtime.knowledge import Fact, KnowledgeGraph
 
 
 class TestFact:
@@ -39,8 +39,8 @@ class TestKnowledgeGraph:
 
     def test_conflict_detection(self):
         kg = KnowledgeGraph()
-        f1 = kg.assert_fact("python", "is_a", "language", confidence=0.8)
-        f2 = kg.assert_fact("python", "is_a", "snake", confidence=0.8)
+        kg.assert_fact("python", "is_a", "language", confidence=0.8)
+        kg.assert_fact("python", "is_a", "snake", confidence=0.8)
         # Conflicting fact should reduce old confidence
         results = kg.query(subject="python", predicate="is_a")
         assert len(results) == 2

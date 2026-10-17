@@ -1,6 +1,5 @@
 """Tests for the geolocation module."""
 
-import time
 
 from runtime.geolocation import GeoLocation
 

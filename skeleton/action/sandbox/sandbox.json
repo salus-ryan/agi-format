@@ -2,11 +2,17 @@
   "name": "sandbox",
   "description": "Execution sandbox. Constrains the agent's actions to prevent unintended side effects. All tool executions pass through the sandbox before reaching the real world.",
   "config": {
+    "execution": {
+      "shell_enabled": false,
+      "python_enabled": false,
+      "allowed_commands": ["pwd", "ls", "echo", "printf", "wc", "head", "tail", "sort", "uniq"]
+    },
     "isolation": {
       "type": "container",
       "description": "Actions execute in an isolated container with limited resources",
-      "runtime": "wasm",
-      "fallback": "docker"
+      "runtime": "subprocess",
+      "fallback": "deny",
+      "description_note": "The reference runtime uses a constrained subprocess profile. Production runtimes should provide container or microVM isolation."
     },
     "resource_limits": {
       "max_cpu_seconds_per_action": 60,

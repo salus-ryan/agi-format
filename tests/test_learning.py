@@ -1,6 +1,6 @@
 """Tests for the learning module: replay buffer, online learner, consolidator."""
 
-from runtime.learning import ReplayBuffer, Experience, OnlineLearner, Consolidator
+from runtime.learning import Consolidator, Experience, OnlineLearner, ReplayBuffer
 
 
 class TestExperience:

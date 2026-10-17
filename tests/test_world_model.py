@@ -2,8 +2,8 @@
 
 from runtime.geolocation import GeoLocation
 from runtime.world_model import (
-    WorldModel, DynamicsModel, Node, Edge,
-    CAUSES, ENABLES, CONSTRAINS, LOCATED_IN, RUNS_ON,
+    DynamicsModel,
+    WorldModel,
 )
 
 
@@ -42,7 +42,7 @@ class TestWorldModel:
     def test_predict_includes_dynamics(self):
         wm = WorldModel(_make_geo())
         # Record some transitions
-        for i in range(10):
+        for _ in range(10):
             wm.dynamics.record_transition("shell", "shell", "run cmd", "ok", 0.8, True)
         preds = wm.predict("running a shell command", tool="shell", domain="shell")
         dynamics_preds = [p for p in preds if p.get("source") == "learned_dynamics"]

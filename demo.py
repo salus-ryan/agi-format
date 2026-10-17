@@ -8,10 +8,12 @@ Shows the full lifecycle:
 4. Print state, action log, and module statistics
 """
 
-import json
 import sys
 
 import structlog
+
+from runtime.kernel import AGIKernel
+from runtime.loader import load_agi
 
 structlog.configure(
     processors=[
@@ -22,9 +24,6 @@ structlog.configure(
 )
 
 sys.stdout.reconfigure(line_buffering=True)
-
-from runtime.kernel import AGIKernel
-from runtime.loader import load_agi
 
 
 def print_header(text: str) -> None:
@@ -65,7 +64,7 @@ def main() -> None:
 
     print(f"  Loaded: {package.name} v{package.version}")
     print(f"  Format: .agi v{package.format_version}")
-    print(f"  Modules: perception, reasoning, memory, language, action, learning, goals")
+    print("  Modules: perception, reasoning, memory, language, action, learning, goals")
 
     # 2. Initialize the kernel
     print_header("Initializing AGI Kernel")
@@ -117,13 +116,9 @@ def main() -> None:
     print("  together by a declarative goal loop, with safety")
     print("  constraints enforced at every action boundary.")
     print()
-    print("  To make this a real agent, replace the stub modules")
-    print("  with actual implementations:")
-    print("    - reasoning: LLM + world model + planner")
-    print("    - memory: vector DB + knowledge graph")
-    print("    - perception: vision/audio encoders")
-    print("    - learning: LoRA + replay + EWC")
-    print("    - action: sandboxed tool execution")
+    print("  This command uses deterministic skeleton modules to inspect")
+    print("  the control flow without a model server. The model-backed")
+    print("  reference implementation is exposed through runtime/api_server.py.")
     print()
 
 

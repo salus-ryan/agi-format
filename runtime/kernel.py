@@ -183,15 +183,15 @@ class AGIKernel:
     def run_interactive(self, max_steps: int = 100) -> None:
         """Run the agent in interactive mode, accepting user input from stdin."""
         print(f"\n{'='*60}")
-        print(f"  AGI Runtime Kernel v0.1.0")
+        print("  AGI Runtime Kernel v0.1.0")
         print(f"  Agent: {self.package.name} v{self.package.version}")
         print(f"  Format: .agi v{self.package.format_version}")
         print(f"{'='*60}")
-        print(f"\n  Modules loaded: perception, reasoning, memory,")
-        print(f"                  language, action, learning, goals")
-        print(f"\n  Type a message to interact. Type 'quit' to exit.")
-        print(f"  Type 'status' to see agent state.")
-        print(f"  Type 'log' to see action log.")
+        print("\n  Modules loaded: perception, reasoning, memory,")
+        print("                  language, action, learning, goals")
+        print("\n  Type a message to interact. Type 'quit' to exit.")
+        print("  Type 'status' to see agent state.")
+        print("  Type 'log' to see action log.")
         print(f"{'='*60}\n")
 
         step = 0
@@ -220,7 +220,7 @@ class AGIKernel:
 
     def _print_status(self) -> None:
         """Print current agent state."""
-        print(f"\n--- Agent Status ---")
+        print("\n--- Agent Status ---")
         print(f"  Steps completed: {self.total_steps}")
         print(f"  Current goal: {self.state.current_goal.description if self.state.current_goal else 'None'}")
         print(f"  Current plan: {f'{self.state.current_plan.current_step_index}/{len(self.state.current_plan.steps)} steps' if self.state.current_plan else 'None'}")
@@ -228,7 +228,7 @@ class AGIKernel:
         print(f"  Learning updates: {self.learning.update_count}")
         avg = self.learning.total_reward / self.learning.update_count if self.learning.update_count > 0 else 0
         print(f"  Avg reward: {avg:.3f}")
-        print(f"--------------------\n")
+        print("--------------------\n")
 
     def _print_action_log(self) -> None:
         """Print action history."""
@@ -238,7 +238,7 @@ class AGIKernel:
         print(f"\n--- Action Log ({len(self.action.action_log)} actions) ---")
         for i, entry in enumerate(self.action.action_log[-10:], 1):
             print(f"  {i}. [{entry['tool']}] {entry['explanation']}")
-        print(f"--------------------\n")
+        print("--------------------\n")
 
     def _print_step_result(self, result: dict) -> None:
         """Print a summary of what happened in this step."""
@@ -251,7 +251,7 @@ class AGIKernel:
                 if event["goal"]:
                     print(f"  [goal] {event['goal']}")
                 else:
-                    print(f"  [goal] No goal selected")
+                    print("  [goal] No goal selected")
             elif phase == "plan":
                 print(f"  [plan] Created {event['steps']}-step plan")
             elif phase == "act":
