@@ -85,7 +85,7 @@ class PlanSearch:
         self.plans_discarded = 0
 
     async def search(self, query: str, context: dict, llm_fn, tool_fn,
-                     world_model=None) -> PlanResult | None:
+                     world_model=None, escalation_fn=None) -> PlanResult | None:
         """Full plan search cycle.
 
         Args:
@@ -95,6 +95,7 @@ class PlanSearch:
             llm_fn: async fn(messages, max_tokens, temperature) -> str
             tool_fn: fn(tool, params) -> dict (tool executor)
             world_model: optional WorldModel for simulation
+            escalation_fn: optional fn(tool, params) -> EscalationDecision
 
         Returns:
             PlanResult if a plan was executed, None if task is simple enough
@@ -126,14 +127,31 @@ class PlanSearch:
                  predicted_reward=selected.predicted_reward,
                  candidates_considered=len(candidates))
 
-        # Step 5: execute the plan
+        # Step 5: execute the plan (with escalation checks)
         tool_results = []
         for step in selected.steps:
             tool = step.get("tool", "communicate")
             params = step.get("params", {})
 
             if tool == "communicate":
+                tool_results.append({
+                    "tool": "communicate", "params": params,
+                    "success": True, "result": params.get("message", "")[:200],
+                })
                 continue
+
+            # Check escalation before executing
+            if escalation_fn:
+                escalation = escalation_fn(tool, params)
+                if escalation.should_escalate:
+                    tool_results.append({
+                        "tool": tool, "params": params,
+                        "success": False,
+                        "result": f"ESCALATION: {escalation.why} -- {escalation.what}",
+                    })
+                    log.info("plan_step_escalated", tool=tool,
+                             why=escalation.why[:200])
+                    break
 
             result = tool_fn(tool, params)
             tool_results.append({
@@ -254,22 +272,47 @@ class PlanSearch:
 
     async def _simulate_plans(self, plans: list[Plan], context: dict,
                               llm_fn, world_model) -> list[Plan]:
-        """Simulate each plan against the world model and adjust predicted rewards."""
+        """Simulate each plan using both dynamics model predictions and LLM reasoning."""
         world_summary = world_model.summary()
 
         for plan in plans:
             try:
-                # Ask the LLM to predict the outcome given the world model state
+                # Step 1: Use the dynamics model for data-driven predictions
+                dynamics_predictions = []
+                for step in plan.steps:
+                    tool = step.get("tool", "communicate")
+                    # Classify domain from context
+                    domain = context.get("domain", "general") if context else "general"
+                    prediction = world_model.dynamics.predict_outcome(
+                        domain=domain, tool=tool,
+                        state_summary=plan.description[:200],
+                    )
+                    dynamics_predictions.append({
+                        "tool": tool,
+                        "expected_reward": prediction.get("expected_reward", 0.5),
+                        "success_probability": prediction.get("success_probability", 0.5),
+                        "confidence": prediction.get("confidence", 0.0),
+                    })
+
+                # Step 2: Use causal graph predictions for entities in the plan
+                causal_predictions = world_model.predict(plan.description[:200])
+
+                # Step 3: Combine dynamics + causal + LLM reasoning
+                dynamics_context = json.dumps(dynamics_predictions, default=str)[:400]
+                causal_context = json.dumps(causal_predictions, default=str)[:300]
+
                 response = await llm_fn([
                     {"role": "system", "content": (
-                        "Given the current world state, predict the outcome of this plan. "
-                        "Consider what could go wrong based on causal relationships. "
+                        "Given the world state, dynamics model predictions, and causal graph, "
+                        "predict the outcome of this plan. "
                         "Return JSON: {\"adjusted_reward\": 0.0-1.0, \"failure_probability\": 0.0-1.0, "
                         "\"reasoning\": \"...\"}. JSON only."
                     )},
                     {"role": "user", "content": (
-                        f"World state: {json.dumps(world_summary, default=str)[:500]}\n"
-                        f"Plan: {json.dumps(plan.to_dict(), default=str)[:500]}"
+                        f"World state: {json.dumps(world_summary, default=str)[:400]}\n"
+                        f"Dynamics predictions per step: {dynamics_context}\n"
+                        f"Causal predictions: {causal_context}\n"
+                        f"Plan: {json.dumps(plan.to_dict(), default=str)[:400]}"
                     )},
                 ], max_tokens=256, temperature=0.2)
 
@@ -278,8 +321,18 @@ class PlanSearch:
                     sim = json.loads(json_match.group())
                     adjusted = float(sim.get("adjusted_reward", plan.predicted_reward))
                     failure_prob = float(sim.get("failure_probability", 0.3))
-                    # Blend original prediction with simulation
-                    plan.predicted_reward = adjusted * (1 - failure_prob)
+
+                    # Weight dynamics model confidence into the blend
+                    high_confidence_steps = [d for d in dynamics_predictions
+                                             if d["confidence"] > 0.5]
+                    if high_confidence_steps:
+                        # Dynamics model has real data -- weight it more heavily
+                        dynamics_reward = sum(d["expected_reward"] * d["success_probability"]
+                                             for d in high_confidence_steps) / len(high_confidence_steps)
+                        plan.predicted_reward = 0.4 * dynamics_reward + 0.6 * adjusted * (1 - failure_prob)
+                    else:
+                        plan.predicted_reward = adjusted * (1 - failure_prob)
+
             except Exception:
                 pass  # keep original prediction
 

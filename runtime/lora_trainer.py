@@ -188,16 +188,36 @@ class LoRATrainer:
             if tokenizer.pad_token is None:
                 tokenizer.pad_token = tokenizer.eos_token
 
-            # Load model with minimal GPU memory
-            model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                revision=self.model_revision,
-                torch_dtype=torch.float16,
-                device_map="auto",
-                trust_remote_code=True,
-                # Key: only load for training, not for full inference
-                low_cpu_mem_usage=True,
-            )
+            # Load model in 4-bit quantization to fit in ~3.6GB headroom
+            # Full fp16 is ~16GB which would OOM; 4-bit is ~4GB, fits with
+            # optimizer states (~128MB) and activations (~500MB with grad checkpoint)
+            try:
+                from transformers import BitsAndBytesConfig
+                quantization_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_use_double_quant=True,
+                )
+                model = AutoModelForCausalLM.from_pretrained(
+                    self.model_name,
+                    revision=self.model_revision,
+                    quantization_config=quantization_config,
+                    device_map="auto",
+                    trust_remote_code=True,
+                    low_cpu_mem_usage=True,
+                )
+            except (ImportError, Exception) as quant_err:
+                log.warning("4bit_quantization_failed_falling_back", error=str(quant_err))
+                # Fallback: load on CPU only (slow but won't OOM the GPU)
+                model = AutoModelForCausalLM.from_pretrained(
+                    self.model_name,
+                    revision=self.model_revision,
+                    torch_dtype=torch.float16,
+                    device_map="cpu",
+                    trust_remote_code=True,
+                    low_cpu_mem_usage=True,
+                )
 
             # Apply LoRA
             lora_config = LoraConfig(
@@ -316,6 +336,9 @@ class LoRATrainer:
             shutil.rmtree(output_dir, ignore_errors=True)
             data_path.unlink(missing_ok=True)
 
+            # Hot-load the adapter into vLLM
+            self._hot_load_adapter()
+
             return metrics
 
         except ImportError as e:
@@ -336,6 +359,40 @@ class LoRATrainer:
                     torch.cuda.empty_cache()
             except ImportError:
                 pass
+
+    def _hot_load_adapter(self) -> None:
+        """Tell vLLM to load/reload the LoRA adapter via its API."""
+        import httpx
+        vllm_url = os.environ.get("VLLM_BASE_URL", "http://127.0.0.1:8000")
+        adapter_name = "agent-lora"
+        try:
+            # First try to unload existing adapter (ignore 404)
+            try:
+                httpx.post(
+                    f"{vllm_url}/v1/unload_lora_adapter",
+                    json={"lora_name": adapter_name},
+                    timeout=10,
+                )
+            except Exception:
+                pass
+
+            # Load the new adapter
+            resp = httpx.post(
+                f"{vllm_url}/v1/load_lora_adapter",
+                json={
+                    "lora_name": adapter_name,
+                    "lora_path": str(self.adapter_path),
+                },
+                timeout=30,
+            )
+            if resp.status_code < 400:
+                log.info("lora_adapter_hot_loaded", name=adapter_name,
+                         path=str(self.adapter_path))
+            else:
+                log.warning("lora_adapter_hot_load_failed",
+                            status=resp.status_code, body=resp.text[:200])
+        except Exception as e:
+            log.warning("lora_adapter_hot_load_error", error=str(e))
 
     async def train_async(self) -> dict:
         """Run training in a thread pool to avoid blocking the event loop."""

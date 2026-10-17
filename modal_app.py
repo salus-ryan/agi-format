@@ -55,6 +55,8 @@ image = (
         "uvicorn==0.34.3",
         "peft==0.15.2",
         "trl==0.18.1",
+        "bitsandbytes==0.45.5",
+        "z3-solver==4.13.4.0",
     )
     .env({
         "TORCH_CPP_LOG_LEVEL": "FATAL",

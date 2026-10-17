@@ -58,7 +58,7 @@ class TestOnlineLearner:
         # Should be ready to learn
         assert learner.should_learn()
         metrics = learner.learn_step()
-        assert "loss" in metrics
+        assert "mean_prediction_error" in metrics
 
     def test_summary(self):
         rb = ReplayBuffer(capacity=100)

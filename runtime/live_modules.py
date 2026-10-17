@@ -145,6 +145,22 @@ class ToolExecutor:
     SANDBOX_MAX_OUTPUT = 10000  # chars
     ALLOWED_PATHS = ["/tmp/agent-workspace", "/agent-memory"]
 
+    # Robust command blocklist: patterns checked against normalized command
+    BLOCKED_PATTERNS = [
+        "rm -rf /", "rm -rf /*", "rm -fr /", "rm -fr /*",
+        "mkfs", "dd if=", ":(){ :", "chmod -R 777 /",
+        "> /dev/", ">> /dev/", "mv / ", "mv /* ",
+        "shutdown", "reboot", "init 0", "init 6",
+        "curl|sh", "curl|bash", "wget|sh", "wget|bash",
+        "base64 -d|sh", "base64 -d|bash", "base64 --decode|sh",
+        "python -c", "python3 -c",  # use python_eval tool instead
+        "nc -l", "ncat -l",  # no reverse shells
+        "passwd", "useradd", "userdel", "groupadd",
+        "iptables", "ufw",
+        "/etc/shadow", "/etc/passwd",
+        "eval $(", "eval \"$(", "eval '$(", "source /dev",
+    ]
+
     def __init__(self):
         self.execution_count = 0
         self.success_count = 0
@@ -191,11 +207,14 @@ class ToolExecutor:
     def _exec_shell(self, command: str) -> dict:
         if not command.strip():
             return {"success": False, "error": "Empty command"}
-        # Block dangerous commands
-        blocked = ["rm -rf /", "mkfs", "dd if=", "> /dev/", ":(){ :", "chmod -R 777 /"]
-        for b in blocked:
-            if b in command:
-                return {"success": False, "error": f"Blocked dangerous command: {b}"}
+        # Normalize and check against robust blocklist
+        cmd_normalized = command.lower().replace("\\", "").strip()
+        for pattern in self.BLOCKED_PATTERNS:
+            if pattern in cmd_normalized:
+                return {"success": False, "error": f"Blocked dangerous command: {pattern}"}
+        # Block pipe-to-shell patterns: curl/wget piped to sh/bash
+        if re.search(r"(curl|wget)\s.*\|\s*(ba)?sh", cmd_normalized):
+            return {"success": False, "error": "Blocked: pipe-to-shell execution"}
 
         try:
             result = subprocess.run(
@@ -587,10 +606,27 @@ class VectorMemory:
             embedding = self._embed(text)
         return self.add(text, metadata, importance, embedding)
 
+    async def search_async(self, query: str, top_k: int = 5) -> list[dict]:
+        """Search using LLM-backed embedding if available (consistent with add_async)."""
+        if not self.entries:
+            return []
+        q_emb = None
+        if self.llm:
+            try:
+                q_emb = np.array(await self.llm.embed_async(query))
+            except Exception:
+                pass
+        if q_emb is None:
+            q_emb = np.array(self._embed(query))
+        return self._search_with_embedding(q_emb, top_k)
+
     def search(self, query: str, top_k: int = 5) -> list[dict]:
         if not self.entries:
             return []
         q_emb = np.array(self._embed(query))
+        return self._search_with_embedding(q_emb, top_k)
+
+    def _search_with_embedding(self, q_emb: np.ndarray, top_k: int) -> list[dict]:
         scores = []
         for entry in self.entries:
             e_emb = np.array(entry["embedding"])
@@ -759,6 +795,7 @@ class LiveKernel:
         self.total_steps = 0
         self.action_log: list[dict] = []
         self.conversation_history: list[dict] = []
+        self._recent_failures: dict[str, int] = {}  # tool:params_hash -> count
 
         log.info(
             "live_kernel_initialized", agent=package.name, model=model_name,
@@ -787,10 +824,20 @@ class LiveKernel:
         step_start = time.time()
         step_log = {"step": self.total_steps, "events": []}
 
-        # 1. PERCEIVE
+        # 1. PERCEIVE -- process input through multimodal pipeline
         percepts = self.perception.perceive(user_input)
-        step_log["events"].append({"phase": "perceive", "modality": "text",
-                                    "length": len(user_input)})
+        percept_metadata = percepts[0].metadata if percepts else {}
+        step_log["events"].append({"phase": "perceive",
+                                    "modality": percepts[0].modality if percepts else "text",
+                                    "length": len(user_input),
+                                    "language": percept_metadata.get("language", "unknown")})
+
+        # Update geolocation with current interlocutor and knowledge counts
+        self.geolocation.update_informational(
+            episodic_count=len(self.memory_store),
+            semantic_count=len(self.knowledge_graph),
+            procedural_count=len(self.procedural_memory.skills),
+        )
 
         # 2. GROUND -- extract entities into world model + facts into knowledge graph
         grounding_entities = await self._ground_input(user_input)
@@ -810,7 +857,7 @@ class LiveKernel:
             self.working_memory.attend(world_context[:300], source="world_model", relevance=0.6)
 
         # 4. REMEMBER -- episodic + procedural + semantic (knowledge graph)
-        relevant_memories = self.memory_store.search(user_input, top_k=3)
+        relevant_memories = await self.memory_store.search_async(user_input, top_k=3)
         memory_context = ""
         if relevant_memories:
             memory_lines = [f"- {m['text'][:200]}" for m in relevant_memories]
@@ -840,6 +887,7 @@ class LiveKernel:
             llm_fn=self.llm.chat_async,
             tool_fn=self.tools.execute,
             world_model=self.world_model,
+            escalation_fn=self._check_escalation,
         )
 
         all_tool_results = []
@@ -915,7 +963,7 @@ class LiveKernel:
                 escalation = self._check_escalation(tc["tool"], tc["params"])
                 if escalation.should_escalate:
                     tool_results_text.append(
-                        f"[ESCALATION REQUIRED for {tc['tool']}]: {escalation.reason}. "
+                        f"[ESCALATION REQUIRED for {tc['tool']}]: {escalation.why} -- {escalation.what}. "
                         f"This action requires human approval."
                     )
                     continue
@@ -951,6 +999,27 @@ class LiveKernel:
             })
             final_response = clean_response
 
+        # Track failures for escalation and append to action_log
+        for tr in all_tool_results:
+            failure_key = f"{tr['tool']}:{json.dumps(tr.get('params', {}), sort_keys=True)[:100]}"
+            if tr.get("success"):
+                self._recent_failures.pop(failure_key, None)
+            else:
+                self._recent_failures[failure_key] = self._recent_failures.get(failure_key, 0) + 1
+
+            self.action_log.append({
+                "step": self.total_steps,
+                "tool": tr["tool"],
+                "params": tr.get("params", {}),
+                "success": tr.get("success"),
+                "result_preview": tr.get("result_preview", "")[:200],
+                "timestamp": time.time(),
+            })
+
+        # Keep action log bounded
+        if len(self.action_log) > 1000:
+            self.action_log = self.action_log[-1000:]
+
         step_log["events"].append({
             "phase": "act",
             "plan_executed": plan_executed,
@@ -971,17 +1040,21 @@ class LiveKernel:
                 "all_passed": all(r.verified for r in verification_results),
             })
 
-        # 8. ALIGNMENT CHECK
-        alignment = self._check_alignment(final_response)
+        # 8. ALIGNMENT CHECK (LLM-judge against declared constraints)
+        alignment = await self._check_alignment_async(final_response, all_tool_results)
         if not alignment.approved:
-            final_response = f"[Blocked: {', '.join(alignment.violated_constraints)}]"
+            final_response = f"[Blocked: {', '.join(alignment.violated_constraints)}] {alignment.explanation}"
         step_log["events"].append({"phase": "alignment",
-                                    "approved": alignment.approved})
+                                    "approved": alignment.approved,
+                                    "explanation": alignment.explanation[:200]})
 
         # 9. UPDATE USER MODEL (theory of mind)
         await self._update_user_model(user_input, final_response)
         step_log["events"].append({"phase": "theory_of_mind",
                                     "user_goals": len(self.user_model.goals)})
+
+        # 9b. UPDATE GOAL STACK -- infer goals from user input
+        await self._update_goals(user_input, final_response, reward_total)
 
         # 10. LEARN -- store experience, extract procedures, update replay
         elapsed = time.time() - step_start
@@ -1134,6 +1207,37 @@ class LiveKernel:
         except Exception as e:
             log.debug("procedure_extraction_failed", error=str(e))
 
+    async def _update_goals(self, user_input: str, response: str, reward: float) -> None:
+        """Extract and track goals from user input using LLM."""
+        try:
+            analysis = await self.llm.chat_async([
+                {"role": "system", "content": (
+                    "Identify any goals or tasks the user is requesting. "
+                    'Return JSON: {"goals": [{"description": "...", "priority": 0.0-1.0}], '
+                    '"completed_goals": ["description of any goals that were just completed"]}. '
+                    "Empty lists if no clear goals. JSON only."
+                )},
+                {"role": "user", "content": (
+                    f"User: {user_input[:300]}\nAgent response: {response[:300]}"
+                )},
+            ], max_tokens=200, temperature=0.1)
+            json_match = re.search(r'\{.*\}', analysis, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+                # Add new goals
+                for goal in data.get("goals", []):
+                    desc = goal.get("description", "")
+                    if desc and not any(g["description"] == desc for g in self.goal_stack.get_active_goals()):
+                        self.goal_stack.add_goal(desc, priority=goal.get("priority", 0.5))
+                # Complete goals
+                for completed in data.get("completed_goals", []):
+                    for g in self.goal_stack.get_active_goals():
+                        if completed.lower() in g["description"].lower():
+                            self.goal_stack.update_progress(g["id"], 1.0, "completed")
+                            break
+        except Exception as e:
+            log.debug("goal_update_failed", error=str(e))
+
     def _get_learning_context(self) -> str:
         """Get high-reward episodes from replay buffer as learning context."""
         if self.replay_buffer.size < 5:
@@ -1162,18 +1266,76 @@ class LiveKernel:
         }
         return sum(components.values()) / len(components)
 
-    def _check_alignment(self, response: str) -> AlignmentCheck:
+    async def _check_alignment_async(self, response: str,
+                                      tool_calls: list[dict] | None = None) -> AlignmentCheck:
+        """Check alignment against declared constraints using LLM-judge.
+
+        Evaluates both the response text AND pending tool actions against
+        all constraints from alignment.json.
+        """
+        constraints = self.alignment_config.get("config", {}).get("constraints", [])
+        hard_constraints = [c for c in constraints if c.get("type") == "hard"]
+
+        # Build the check content: response + any tool actions
+        check_text = f"Response: {response[:500]}"
+        if tool_calls:
+            check_text += f"\nTool actions: {json.dumps(tool_calls[:3], default=str)[:300]}"
+
+        try:
+            constraint_descriptions = "\n".join(
+                f"- {c['id']}: {c['description']}" for c in hard_constraints
+            )
+            analysis = await self.llm.chat_async([
+                {"role": "system", "content": (
+                    "You are a safety checker. Check if the content violates ANY of these constraints:\n"
+                    f"{constraint_descriptions}\n\n"
+                    "Return JSON: {\"violations\": [\"constraint_id\", ...], \"safe\": true/false, "
+                    "\"explanation\": \"...\"}. If no violations, return {\"violations\": [], \"safe\": true, "
+                    "\"explanation\": \"OK\"}. JSON only."
+                )},
+                {"role": "user", "content": check_text},
+            ], max_tokens=128, temperature=0.0)
+
+            json_match = re.search(r'\{.*\}', analysis, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+                violations = result.get("violations", [])
+                return AlignmentCheck(
+                    approved=result.get("safe", True) and len(violations) == 0,
+                    violated_constraints=violations,
+                    explanation=result.get("explanation", "OK"),
+                )
+        except Exception as e:
+            log.debug("alignment_check_failed", error=str(e))
+
+        # Fallback: keyword check (defense in depth, not sole mechanism)
         violations = []
         response_lower = response.lower()
         patterns = [
-            ("how to make", "weapons", "no_harm"),
             ("how to make", "bomb", "no_harm"),
             ("hack into", "", "no_harm"),
             ("steal", "credentials", "no_harm"),
-            ("bypass", "security", "no_unauthorized_access"),
         ]
         for start, end, constraint in patterns:
-            if start in response_lower and end in response_lower:
+            if start in response_lower and (not end or end in response_lower):
+                violations.append(constraint)
+        return AlignmentCheck(
+            approved=len(violations) == 0,
+            violated_constraints=violations,
+            explanation="OK" if not violations else str(violations),
+        )
+
+    def _check_alignment(self, response: str) -> AlignmentCheck:
+        """Synchronous fallback for alignment check (used in non-async contexts)."""
+        violations = []
+        response_lower = response.lower()
+        patterns = [
+            ("how to make", "bomb", "no_harm"),
+            ("hack into", "", "no_harm"),
+            ("steal", "credentials", "no_harm"),
+        ]
+        for start, end, constraint in patterns:
+            if start in response_lower and (not end or end in response_lower):
                 violations.append(constraint)
         return AlignmentCheck(
             approved=len(violations) == 0,
@@ -1182,38 +1344,80 @@ class LiveKernel:
         )
 
     def _check_escalation(self, tool: str, params: dict) -> EscalationDecision:
-        """Check if a tool execution needs human approval."""
+        """Check if a tool execution needs human approval.
+
+        Evaluates against actual trigger IDs from escalation.json:
+          - irreversible_action: destructive commands, data deletion
+          - scope_exceeded: actions outside authorized paths/permissions
+          - alignment_violation: blocked by alignment check
+          - repeated_failure: (tracked by _failure_counts)
+          - low_confidence: (tracked externally)
+          - ethical_uncertainty: external POST, financial URLs
+        """
         triggers = self.escalation_config.get("config", {}).get("escalation_triggers", [])
-        for trigger in triggers:
-            trigger_id = trigger.get("id", "")
-            # Financial actions
-            if trigger_id == "financial_action" and tool == "web_request":
+        trigger_ids = {t["id"] for t in triggers}
+
+        # irreversible_action: destructive or hard-to-undo operations
+        if "irreversible_action" in trigger_ids:
+            if tool == "shell":
+                cmd = params.get("command", "").lower()
+                if any(kw in cmd for kw in [
+                    "rm -rf", "rm -r", "rmdir", "drop table", "truncate",
+                    "chmod", "chown", "systemctl", "apt install", "pip install",
+                    "kill -9", "pkill", "mkfs", "fdisk",
+                ]):
+                    return EscalationDecision(
+                        should_escalate=True,
+                        what=f"Shell command: {cmd[:80]}",
+                        why="Irreversible action detected",
+                        trigger_id="irreversible_action",
+                    )
+            if tool == "file_write":
+                path = params.get("path", "")
+                if not any(path.startswith(p) for p in ["/tmp/agent-workspace", "/agent-memory"]):
+                    return EscalationDecision(
+                        should_escalate=True,
+                        what=f"Write to: {path}",
+                        why="Writing outside sandbox",
+                        trigger_id="irreversible_action",
+                    )
+
+        # scope_exceeded: actions outside granted permissions
+        if "scope_exceeded" in trigger_ids:
+            if tool == "web_request":
                 url = params.get("url", "")
-                if any(kw in url for kw in ["payment", "transfer", "purchase", "checkout"]):
+                # Financial URLs
+                if any(kw in url.lower() for kw in ["payment", "transfer", "purchase",
+                                                      "checkout", "stripe", "paypal"]):
                     return EscalationDecision(
                         should_escalate=True,
-                        reason="Financial action detected -- requires human approval",
-                        trigger_id=trigger_id,
+                        what=f"Web request to: {url[:80]}",
+                        why="Financial action outside scope",
+                        trigger_id="scope_exceeded",
                     )
-            # System modifications
-            if trigger_id == "system_modification" and tool == "shell":
-                cmd = params.get("command", "")
-                if any(kw in cmd for kw in ["rm -rf", "chmod", "chown", "systemctl",
-                                              "apt install", "pip install"]):
-                    return EscalationDecision(
-                        should_escalate=True,
-                        reason=f"System modification: {cmd[:50]}",
-                        trigger_id=trigger_id,
-                    )
-            # External communication
-            if trigger_id == "external_communication" and tool == "web_request":
+                # External POST
                 if params.get("method", "").upper() == "POST":
                     return EscalationDecision(
                         should_escalate=True,
-                        reason="External POST request requires approval",
-                        trigger_id=trigger_id,
+                        what=f"POST to: {url[:80]}",
+                        why="External POST request requires approval",
+                        trigger_id="scope_exceeded",
                     )
-        return EscalationDecision(should_escalate=False, reason="", trigger_id="")
+
+        # repeated_failure: same tool has failed 3+ times recently
+        if "repeated_failure" in trigger_ids:
+            recent_failures = getattr(self, "_recent_failures", {})
+            failure_key = f"{tool}:{json.dumps(params, sort_keys=True)[:100]}"
+            count = recent_failures.get(failure_key, 0)
+            if count >= 3:
+                return EscalationDecision(
+                    should_escalate=True,
+                    what=f"{tool} execution",
+                    why=f"Repeated failure ({count}x)",
+                    trigger_id="repeated_failure",
+                )
+
+        return EscalationDecision(should_escalate=False)
 
     @staticmethod
     def _extract_tool_calls(text: str) -> list[dict]:

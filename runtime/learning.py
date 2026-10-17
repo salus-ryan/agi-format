@@ -205,52 +205,53 @@ class ReplayBuffer:
 
 
 class OnlineLearner:
-    """LoRA-based online learning from experience batches.
+    """Replay-based learning: curates training data from experiences.
 
-    In a real deployment with enough GPU headroom, this would:
-    1. Take a batch of experiences from the replay buffer
-    2. Format them as training examples (input/output pairs)
-    3. Run a LoRA fine-tuning step on the base model
-    4. Track the loss and update the replay buffer priorities
+    This module is the bridge between the replay buffer and the LoRA trainer.
+    It performs three functions:
+      1. Records experiences into the prioritized replay buffer
+      2. Curates training data by selecting high-value experiences
+         and updating priorities based on reward prediction error
+      3. Tracks learning metrics (mean reward, prediction error, etc.)
 
-    Here we implement the full pipeline logic but use the LLM's
-    self-evaluation as a proxy for actual gradient updates (since
-    LoRA training requires dedicated GPU memory we may not have
-    during inference).
+    Actual gradient updates happen in lora_trainer.py. This module decides
+    WHAT to train on; lora_trainer decides HOW to train.
     """
 
     def __init__(
         self,
         replay_buffer: ReplayBuffer,
-        learning_rate: float = 1e-4,
         batch_size: int = 8,
-        update_frequency: int = 10,  # learn every N experiences
+        update_frequency: int = 10,  # curate every N experiences
     ):
         self.replay = replay_buffer
-        self.lr = learning_rate
         self.batch_size = batch_size
         self.update_frequency = update_frequency
 
         self.updates_performed = 0
-        self.total_loss = 0.0
+        self.total_prediction_error = 0.0
         self.experiences_since_update = 0
+        self.curated_count = 0  # total experiences curated for training
 
     def should_learn(self) -> bool:
-        """Check if it's time for a learning step."""
+        """Check if it's time for a curation step."""
         return (
             self.experiences_since_update >= self.update_frequency
             and self.replay.size >= self.batch_size
         )
 
     def record_experience(self, experience: Experience) -> None:
-        """Add experience and potentially trigger learning."""
+        """Add experience and potentially trigger curation."""
         self.replay.add(experience)
         self.experiences_since_update += 1
 
     def learn_step(self) -> dict:
-        """Perform one learning step from replay buffer.
+        """Curate replay buffer: update priorities so the LoRA trainer
+        samples the most useful experiences.
 
-        Returns metrics about the learning step.
+        This computes reward prediction error (TD error) for each sampled
+        experience and updates the replay buffer priorities accordingly.
+        High-error experiences get sampled more often during training.
         """
         if self.replay.size < self.batch_size:
             return {"skipped": True, "reason": "insufficient experiences"}
@@ -258,37 +259,46 @@ class OnlineLearner:
         batch, weights = self.replay.sample(self.batch_size)
         self.experiences_since_update = 0
         self.updates_performed += 1
+        self.curated_count += len(batch)
 
-        # Compute "loss" as negative mean reward (proxy for actual gradient loss)
+        # Compute reward prediction error: how surprising is each experience?
         rewards = np.array([e.reward for e in batch])
-        weighted_rewards = rewards * weights
-        loss = -weighted_rewards.mean()
-        self.total_loss += loss
-
-        # Update priorities based on reward prediction error
         mean_reward = rewards.mean()
-        new_td_errors = [abs(e.reward - mean_reward) for e in batch]
+        prediction_errors = [abs(e.reward - mean_reward) for e in batch]
+        mean_error = float(np.mean(prediction_errors))
+        self.total_prediction_error += mean_error
+
+        # Update priorities: high prediction error = more useful for training
         self.replay.update_priorities(
             [e.id for e in batch],
-            new_td_errors,
+            prediction_errors,
         )
 
         metrics = {
             "update": self.updates_performed,
             "batch_size": len(batch),
-            "loss": float(loss),
-            "mean_reward": float(rewards.mean()),
+            "mean_reward": float(mean_reward),
+            "mean_prediction_error": mean_error,
             "mean_weight": float(weights.mean()),
-            "avg_loss": float(self.total_loss / self.updates_performed),
+            "curated_total": self.curated_count,
         }
 
-        log.info("learning_step", **metrics)
+        log.info("learning_curation_step", **metrics)
         return metrics
+
+    def get_high_value_experiences(self, n: int = 50) -> list[Experience]:
+        """Get the highest-priority experiences for LoRA training."""
+        if self.replay.size == 0:
+            return []
+        batch, _ = self.replay.sample(min(n, self.replay.size))
+        batch.sort(key=lambda e: e.reward, reverse=True)
+        return [e for e in batch if e.reward > 0.3]
 
     def summary(self) -> dict:
         return {
             "updates_performed": self.updates_performed,
-            "avg_loss": self.total_loss / max(1, self.updates_performed),
+            "avg_prediction_error": self.total_prediction_error / max(1, self.updates_performed),
+            "curated_total": self.curated_count,
             "experiences_since_update": self.experiences_since_update,
             "replay": self.replay.summary(),
         }
@@ -298,24 +308,25 @@ class OnlineLearner:
 
 
 class Consolidator:
-    """Prevents catastrophic forgetting through multiple mechanisms:
+    """Prevents catastrophic forgetting through performance monitoring
+    and replay-based training data enrichment.
 
-    1. EWC (Elastic Weight Consolidation): tracks which parameters are
-       important for past tasks and penalizes changes to them.
-       Approximated here as a "skill importance" registry.
+    Three mechanisms:
+      1. Performance monitoring: tracks per-domain reward and detects regressions.
+      2. Replay enrichment: when a regression is detected, surfaces old high-reward
+         experiences from the regressing domain to be re-included in training.
+      3. Skill registry: tracks known skills and their importance so the LoRA
+         trainer can weight training data toward regressing domains.
 
-    2. Episodic replay: periodically replays old experiences during new
-       learning to maintain performance on past tasks.
-
-    3. Performance monitoring: tracks per-task performance and alerts
-       if any previously-mastered skill degrades.
+    This module feeds INTO the LoRA trainer, not replaces it. When it detects
+    a domain regression, it increases the priority of that domain's experiences
+    in the replay buffer so the next LoRA training run emphasizes them.
     """
 
     def __init__(self, replay_buffer: ReplayBuffer):
         self.replay = replay_buffer
 
-        # Skill importance registry (EWC approximation)
-        # Maps skill_name -> {importance: float, last_verified: timestamp}
+        # Skill registry: tracks learned skills and their domain
         self.skill_registry: dict[str, dict] = {}
 
         # Performance tracking per domain
@@ -323,11 +334,14 @@ class Consolidator:
 
         self.consolidation_count = 0
         self.regressions_detected = 0
+        self.replay_boosts_applied = 0
 
-    def register_skill(self, skill_name: str, importance: float = 0.5) -> None:
+    def register_skill(self, skill_name: str, importance: float = 0.5,
+                       domain: str = "general") -> None:
         """Register a skill the agent has learned."""
         self.skill_registry[skill_name] = {
             "importance": importance,
+            "domain": domain,
             "registered": time.time(),
             "last_verified": time.time(),
             "verification_count": 0,
@@ -357,7 +371,8 @@ class Consolidator:
     def consolidate(self, replay_ratio: float = 0.3) -> dict:
         """Run a consolidation step.
 
-        Samples old experiences for replay and checks for regressions.
+        Samples old experiences, boosts priority of experiences from
+        regressing domains so the LoRA trainer emphasizes them.
         """
         self.consolidation_count += 1
 
@@ -365,28 +380,72 @@ class Consolidator:
         replay_size = max(1, int(self.replay.size * replay_ratio))
         replay_batch, _ = self.replay.sample(min(replay_size, 32))
 
-        # Compute stats
+        # Identify regressing domains
+        regressing_domains = set()
         domains = list(self.domain_performance.keys())
         domain_status = {}
         for domain in domains:
             scores = self.domain_performance[domain]
+            is_regressing = (
+                len(scores) >= 3
+                and max(scores[:-1]) > 0
+                and (max(scores[:-1]) - scores[-1]) / max(scores[:-1]) > 0.05
+            )
+            if is_regressing:
+                regressing_domains.add(domain)
             domain_status[domain] = {
                 "latest": scores[-1] if scores else 0,
                 "peak": max(scores) if scores else 0,
-                "trend": "improving" if len(scores) >= 2 and scores[-1] >= scores[-2] else "stable_or_declining",
+                "trend": "regressing" if is_regressing
+                         else "improving" if len(scores) >= 2 and scores[-1] >= scores[-2]
+                         else "stable",
             }
+
+        # Boost priority of experiences from regressing domains
+        if regressing_domains and replay_batch:
+            boosted = 0
+            for exp in replay_batch:
+                # Check if this experience's domain is regressing
+                exp_domain = self._infer_domain(exp)
+                if exp_domain in regressing_domains and exp.reward > 0.3:
+                    # Boost priority so LoRA trainer samples this more
+                    self.replay.update_priorities(
+                        [exp.id],
+                        [exp.priority * 2.0],  # double the priority
+                    )
+                    boosted += 1
+            if boosted:
+                self.replay_boosts_applied += boosted
+                log.info("consolidation_boosted_experiences",
+                         domains=list(regressing_domains),
+                         boosted=boosted)
 
         result = {
             "consolidation_step": self.consolidation_count,
             "replay_batch_size": len(replay_batch),
             "registered_skills": len(self.skill_registry),
             "monitored_domains": len(domains),
+            "regressing_domains": list(regressing_domains),
             "domain_status": domain_status,
             "regressions_detected": self.regressions_detected,
+            "replay_boosts_applied": self.replay_boosts_applied,
         }
 
-        log.info("consolidation_complete", **{k: v for k, v in result.items() if k != "domain_status"})
+        log.info("consolidation_complete", **{k: v for k, v in result.items()
+                                               if k not in ("domain_status",)})
         return result
+
+    @staticmethod
+    def _infer_domain(exp: Experience) -> str:
+        """Infer domain from experience state summary."""
+        text = exp.state_summary.lower()
+        if any(w in text for w in ["code", "python", "function", "class", "bug"]):
+            return "coding"
+        if any(w in text for w in ["math", "calculate", "equation"]):
+            return "math"
+        if any(w in text for w in ["explain", "what is", "how does"]):
+            return "knowledge"
+        return "general"
 
     def summary(self) -> dict:
         return {
@@ -394,4 +453,5 @@ class Consolidator:
             "registered_skills": len(self.skill_registry),
             "monitored_domains": len(self.domain_performance),
             "regressions_detected": self.regressions_detected,
+            "replay_boosts_applied": self.replay_boosts_applied,
         }
