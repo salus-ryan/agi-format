@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/salus-ryan/agi-format/main/schemas/module-v0.1.0.json",
+  "$id": "https://raw.githubusercontent.com/salus-ryan/agi-format/v0.3.0/schemas/module-v0.1.0.json",
   "title": ".agi module manifest v0.1.0",
   "type": "object",
   "required": ["name", "version", "components", "dependencies", "inputs", "outputs"],

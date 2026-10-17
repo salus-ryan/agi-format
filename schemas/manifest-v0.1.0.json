@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/salus-ryan/agi-format/main/schemas/manifest-v0.1.0.json",
+  "$id": "https://raw.githubusercontent.com/salus-ryan/agi-format/v0.3.0/schemas/manifest-v0.1.0.json",
   "title": ".agi manifest v0.1.0",
   "type": "object",
   "required": ["format_version", "agent", "capabilities", "runtime"],

@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/salus-ryan/agi-format/main/schemas/manifest-v0.1.0.json",
+  "$schema": "https://raw.githubusercontent.com/salus-ryan/agi-format/v0.3.0/schemas/manifest-v0.1.0.json",
   "format_version": "0.1.0",
   "agent": {
     "name": "skeleton-agent",

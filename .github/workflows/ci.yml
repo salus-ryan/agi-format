@@ -28,11 +28,18 @@ jobs:
       - name: Test
         run: pytest -q
       - name: Validate reference package
-        run: agi validate skeleton/
+        run: agi validate skeleton/ --json --report /tmp/source-conformance.json
+      - name: Self-test reusable conformance action
+        uses: ./
+        with:
+          package: skeleton
+          report: /tmp/action-conformance.json
       - name: Build distributions
         run: python -m build && python -m twine check dist/*
-      - name: Verify wheel installation
+      - name: Verify wheel installation and bundled template
         run: |
           python -m venv /tmp/wheel-test
           /tmp/wheel-test/bin/pip install dist/*.whl
-          /tmp/wheel-test/bin/agi validate skeleton/
+          rm -rf /tmp/wheel-test-agent
+          /tmp/wheel-test/bin/agi init /tmp/wheel-test-agent --author "CI"
+          /tmp/wheel-test/bin/agi validate /tmp/wheel-test-agent --json --report /tmp/wheel-conformance.json

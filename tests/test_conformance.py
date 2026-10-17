@@ -9,7 +9,9 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
 
+from runtime.conformance import build_conformance_report
 from runtime.loader import AGILoadError, load_agi, safe_extract_archive
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +22,15 @@ def copy_skeleton(tmp_path: Path) -> Path:
     target = tmp_path / "agent"
     shutil.copytree(SKELETON, target)
     return target
+
+
+def test_schema_identifiers_are_immutable_and_manifest_matches():
+    for schema_path in (ROOT / "schemas").glob("*.json"):
+        schema = json.loads(schema_path.read_text())
+        assert "/v0.3.0/schemas/" in schema["$id"]
+    manifest = json.loads((SKELETON / "manifest.json").read_text())
+    manifest_schema = json.loads((ROOT / "schemas/manifest-v0.1.0.json").read_text())
+    assert manifest["$schema"] == manifest_schema["$id"]
 
 
 def test_rejects_unsupported_format_version(tmp_path):
@@ -100,3 +111,86 @@ def test_pack_is_deterministic(tmp_path):
         )
         assert result.returncode == 0, result.stderr or result.stdout
     assert first.read_bytes() == second.read_bytes()
+
+
+def test_conformance_report_matches_schema_and_archive_digest(tmp_path):
+    archive = tmp_path / "agent.agi"
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "agi_cli.py"), "pack", str(SKELETON), "-o", str(archive)],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+    directory_report = build_conformance_report(SKELETON)
+    archive_report = build_conformance_report(archive)
+    schema = json.loads((ROOT / "schemas/conformance-report-v0.1.0.json").read_text())
+    Draft202012Validator(schema).validate(directory_report)
+    Draft202012Validator(schema).validate(archive_report)
+    assert directory_report["conformant"] is True
+    assert directory_report["package"]["content_sha256"] == archive_report["package"]["content_sha256"]
+
+
+def test_report_cannot_modify_the_package_it_certifies(tmp_path):
+    report_path = SKELETON / "conformance.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "agi_cli.py"),
+            "validate",
+            str(SKELETON),
+            "--report",
+            str(report_path),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "outside the package" in result.stdout
+    assert not report_path.exists()
+
+
+def test_invalid_package_produces_schema_valid_json_report(tmp_path):
+    invalid = tmp_path / "invalid"
+    invalid.mkdir()
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "agi_cli.py"), "validate", str(invalid), "--json"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        check=False,
+    )
+    assert result.returncode == 1
+    report = json.loads(result.stdout)
+    schema = json.loads((ROOT / "schemas/conformance-report-v0.1.0.json").read_text())
+    Draft202012Validator(schema).validate(report)
+    assert report["conformant"] is False
+    assert report["error"]["code"] == "invalid-package"
+
+
+def test_init_creates_custom_conforming_package_and_refuses_overwrite(tmp_path):
+    target = tmp_path / "outside-agent"
+    command = [
+        sys.executable,
+        str(ROOT / "agi_cli.py"),
+        "init",
+        str(target),
+        "--name",
+        "outside-agent",
+        "--author",
+        "Independent Author",
+    ]
+    created = subprocess.run(command, capture_output=True, text=True, cwd=tmp_path, check=False)
+    assert created.returncode == 0, created.stderr or created.stdout
+    manifest = json.loads((target / "manifest.json").read_text())
+    assert manifest["agent"]["name"] == "outside-agent"
+    assert manifest["agent"]["author"] == "Independent Author"
+    assert build_conformance_report(target)["conformant"] is True
+
+    repeated = subprocess.run(command, capture_output=True, text=True, cwd=tmp_path, check=False)
+    assert repeated.returncode == 1
+    assert "target already exists" in repeated.stdout
