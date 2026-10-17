@@ -59,7 +59,7 @@ def test_oci_command_has_hardening_and_maps_workspace_paths(tmp_path, monkeypatc
     assert "--network=none" in command
     assert "--read-only" in command
     assert "--cap-drop=ALL" in command
-    assert "--security-opt=no-new-privileges" in command
+    assert "--security-opt=no-new-privileges=true" in command
     assert "--pids-limit=16" in command
     assert "--memory=256m" in command
     assert PINNED_IMAGE in command
@@ -161,9 +161,9 @@ def test_real_oci_boundary_when_ci_image_is_provided(tmp_path):
     location = executor.execute("shell", {"command": "pwd"})
     created = executor.execute("shell", {"command": "touch created-by-oci"})
 
-    assert location["success"] is True
+    assert location["success"] is True, location
     assert location["result"].strip() == "/workspace"
-    assert created["success"] is True
+    assert created["success"] is True, created
     assert (tmp_path / "created-by-oci").is_file()
 
 

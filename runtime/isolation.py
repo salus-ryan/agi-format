@@ -146,7 +146,7 @@ class OCIIsolation:
             "--network=none",
             "--read-only",
             "--cap-drop=ALL",
-            "--security-opt=no-new-privileges",
+            "--security-opt=no-new-privileges=true",
             "--pids-limit=16",
             f"--memory={self.max_memory_mb}m",
             "--cpus=1",
