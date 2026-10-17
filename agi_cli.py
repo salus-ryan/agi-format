@@ -1,23 +1,20 @@
 #!/usr/bin/env python3
-"""CLI tool for .agi files -- pack, unpack, validate, inspect, and run.
-
-Usage:
-    python agi_cli.py pack skeleton/ -o agent.agi
-    python agi_cli.py unpack agent.agi -o agent_unpacked/
-    python agi_cli.py validate skeleton/
-    python agi_cli.py inspect agent.agi
-    python agi_cli.py run skeleton/
-    python agi_cli.py run agent.agi
-"""
+"""CLI for scaffolding, packing, validating, inspecting, and running `.agi` files."""
 
 import argparse
 import gzip
+import json
+import os
+import re
+import shutil
 import sys
 import tarfile
 from pathlib import Path
 
 import structlog
 
+from runtime import __version__
+from runtime.conformance import build_conformance_report
 from runtime.loader import AGILoadError, load_agi, safe_extract_archive
 
 structlog.configure(
@@ -25,10 +22,59 @@ structlog.configure(
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.dev.ConsoleRenderer(),
-    ]
+    ],
+    logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
 )
 
 sys.stdout.reconfigure(line_buffering=True)
+
+_AGENT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _template_dir() -> Path:
+    candidates = [
+        Path(os.environ["AGI_TEMPLATE_DIR"]) if os.environ.get("AGI_TEMPLATE_DIR") else None,
+        Path(__file__).resolve().parent / "skeleton",
+        Path(sys.prefix) / "share" / "agi-format" / "templates" / "minimal-agent",
+    ]
+    for candidate in candidates:
+        if candidate and (candidate / "manifest.json").is_file():
+            return candidate
+    raise AGILoadError("Bundled minimal-agent template could not be located")
+
+
+def cmd_init(args: argparse.Namespace) -> None:
+    """Create a conforming package from the bundled minimal template."""
+    target = Path(args.target)
+    name = args.name or target.name
+    if not _AGENT_NAME.fullmatch(name):
+        print("Error: agent name must use 1-128 letters, digits, dots, underscores, or hyphens")
+        sys.exit(1)
+    if target.exists():
+        print(f"Error: target already exists: {target}")
+        sys.exit(1)
+
+    try:
+        shutil.copytree(_template_dir(), target)
+        manifest_path = target / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["agent"] = {
+            "name": name,
+            "version": args.version,
+            "description": args.description or f"A conforming .agi agent package named {name}.",
+            "license": args.license,
+        }
+        if args.author:
+            manifest["agent"]["author"] = args.author
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        with load_agi(target):
+            pass
+    except (AGILoadError, OSError, json.JSONDecodeError) as exc:
+        shutil.rmtree(target, ignore_errors=True)
+        print(f"Initialization failed: {exc}")
+        sys.exit(1)
+    print(f"Created conforming agent package: {target}")
+    print(f"Next: agi validate {target}")
 
 
 def cmd_pack(args: argparse.Namespace) -> None:
@@ -102,34 +148,30 @@ def cmd_unpack(args: argparse.Namespace) -> None:
 
 
 def cmd_validate(args: argparse.Namespace) -> None:
-    """Validate a .agi directory or archive."""
-    source = Path(args.source)
-    try:
-        package = load_agi(source)
-        print(f"VALID: {package.name} v{package.version} (format v{package.format_version})")
-
-        # Deep validation: load all modules and components
-        errors = []
-        for module_name in ["perception", "reasoning", "memory", "language", "action", "learning", "goals"]:
-            try:
-                module = package.load_module(module_name)
-                for comp in module.get("components", []):
-                    try:
-                        package.load_json(f"{module_name}/{comp['path']}")
-                    except Exception as e:
-                        errors.append(f"  {module_name}/{comp['path']}: {e}")
-            except Exception as e:
-                errors.append(f"  {module_name}: {e}")
-
-        if errors:
-            print(f"\nWarnings ({len(errors)}):")
-            for err in errors:
-                print(err)
-        else:
-            print("All modules and components validated successfully.")
-
-    except AGILoadError as e:
-        print(f"INVALID: {e}")
+    """Validate a .agi directory or archive and optionally emit JSON evidence."""
+    source_path = Path(args.source)
+    if args.report:
+        report_path = Path(args.report)
+        if source_path.is_dir() and report_path.resolve().is_relative_to(source_path.resolve()):
+            print("Error: conformance report must be written outside the package directory")
+            sys.exit(1)
+    report = build_conformance_report(source_path)
+    if args.report:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    elif report["conformant"]:
+        package = report["package"]
+        print(
+            f"VALID: {package['name']} v{package['version']} "
+            f"(format v{report['format_version']})"
+        )
+        print("All modules and components validated successfully.")
+        print(f"Content SHA-256: {package['content_sha256']}")
+    else:
+        print(f"INVALID: {report['error']['message']}")
+    if not report["conformant"]:
         sys.exit(1)
 
 
@@ -227,10 +269,20 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description=".agi file format CLI -- pack, unpack, validate, inspect, and run AGI agent blueprints",
+        description=".agi format CLI -- scaffold, validate, pack, inspect, and run agent blueprints",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # init
+    p_init = subparsers.add_parser("init", help="Create a conforming starter package")
+    p_init.add_argument("target", help="New package directory")
+    p_init.add_argument("--name", help="Agent name (defaults to target directory name)")
+    p_init.add_argument("--version", default="0.1.0", help="Initial agent version")
+    p_init.add_argument("--author", help="Package author")
+    p_init.add_argument("--description", help="Package description")
+    p_init.add_argument("--license", default="MIT", help="SPDX license identifier")
 
     # pack
     p_pack = subparsers.add_parser("pack", help="Pack a directory into a .agi archive")
@@ -245,6 +297,8 @@ def main() -> None:
     # validate
     p_validate = subparsers.add_parser("validate", help="Validate a .agi directory or archive")
     p_validate.add_argument("source", help="Directory or .agi file to validate")
+    p_validate.add_argument("--json", action="store_true", help="Print a machine-readable report")
+    p_validate.add_argument("--report", help="Also write the JSON report to this path")
 
     # inspect
     p_inspect = subparsers.add_parser("inspect", help="Inspect a .agi file's contents")
@@ -258,6 +312,7 @@ def main() -> None:
     args = parser.parse_args()
 
     commands = {
+        "init": cmd_init,
         "pack": cmd_pack,
         "unpack": cmd_unpack,
         "validate": cmd_validate,

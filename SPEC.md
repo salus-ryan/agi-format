@@ -103,7 +103,7 @@ required capabilities, and runtime requirements.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/salus-ryan/agi-format/main/schemas/manifest-v0.1.0.json",
+  "$schema": "https://raw.githubusercontent.com/salus-ryan/agi-format/v0.3.0/schemas/manifest-v0.1.0.json",
   "format_version": "0.1.0",
   "agent": {
     "name": "string (required)",
@@ -177,6 +177,22 @@ core types are:
 | `Token`               | Language token (text, code, formal)            |
 | `Embedding`           | Dense vector representation                    |
 | `Reward`              | Scalar feedback signal                         |
+
+## Conformance evidence
+
+A package conforms when the reference validator accepts its manifest, all seven module
+manifests, every declared component, the interface registry, the goal loop, and required
+safety policy. `agi validate --json` emits the portable report defined by
+`schemas/conformance-report-v0.1.0.json`.
+
+The report's content digest processes files in ascending package-relative path order. For
+each file, SHA-256 receives the path's four-byte unsigned big-endian UTF-8 byte length,
+the UTF-8 path, the file's eight-byte unsigned big-endian size, and its exact bytes.
+Directory and deterministic archive representations of the same package therefore produce
+the same digest. Conformance does not certify model behavior, security, or runtime quality.
+
+Schema identifiers MUST refer to immutable release tags. Package authors MUST NOT use the
+mutable `main` branch as a normative schema identifier.
 
 ## The Agent Loop
 

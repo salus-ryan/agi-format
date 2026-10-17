@@ -1,0 +1,43 @@
+name: Validate .agi package
+description: Validate an .agi directory or archive and produce a machine-readable conformance report.
+author: Salus
+
+branding:
+  icon: check-circle
+  color: blue
+
+inputs:
+  package:
+    description: Path to the .agi directory or archive in the caller workspace.
+    required: false
+    default: skeleton
+  report:
+    description: Destination for the JSON conformance report.
+    required: false
+    default: agi-conformance-report.json
+  python-version:
+    description: Python version used by the validator.
+    required: false
+    default: "3.12"
+
+outputs:
+  report:
+    description: Path to the generated conformance report.
+    value: ${{ inputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v7
+      with:
+        python-version: ${{ inputs.python-version }}
+    - name: Install validator
+      shell: bash
+      run: python -m pip install "$GITHUB_ACTION_PATH"
+    - name: Validate package
+      shell: bash
+      env:
+        AGI_PACKAGE_PATH: ${{ inputs.package }}
+        AGI_REPORT_PATH: ${{ inputs.report }}
+      run: agi validate "$AGI_PACKAGE_PATH" --json --report "$AGI_REPORT_PATH"

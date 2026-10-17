@@ -5,6 +5,21 @@ The `.agi` format has an independent version declared in each package manifest.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-17
+
+### Added
+
+- `agi init` for generating independently authored, deny-by-default starter packages.
+- Machine-readable, schema-validated conformance reports with stable content digests.
+- A reusable composite GitHub Action and conformance-pilot issue form.
+- External package-authoring and interoperability guidance.
+
+### Changed
+
+- Canonical schema identifiers now target the immutable `v0.3.0` release tag.
+- The skeleton is bundled in wheels so scaffolding works outside a source checkout.
+- The API reports its version from the installed runtime package.
+
 ## [0.2.0] - 2026-10-17
 
 ### Added

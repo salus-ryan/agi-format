@@ -1,0 +1,64 @@
+name: Conformance pilot
+description: Report an independently authored package or runtime interoperability result.
+title: "[conformance] "
+labels: [conformance]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for testing interoperability. Do not attach credentials, private weights, customer data, or proprietary prompts.
+  - type: input
+    id: repository
+    attributes:
+      label: Package or implementation repository
+      description: Public URL for the independently maintained package or runtime.
+      placeholder: https://github.com/example/project
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Tested commit
+      description: Full immutable commit SHA.
+    validations:
+      required: true
+  - type: dropdown
+    id: subject
+    attributes:
+      label: Test subject
+      options:
+        - Independently authored .agi package
+        - Independent validator
+        - Independent runtime
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Validation command
+      description: Exact command and validator version used.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Conformance report
+      description: Paste the machine-readable report or provide a stable artifact URL.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Interoperability result
+      description: What worked, what failed, and any repository-specific changes required.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Data confirmation
+      options:
+        - label: This report contains no credentials, private weights, customer data, or proprietary prompts.
+          required: true

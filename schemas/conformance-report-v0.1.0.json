@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/salus-ryan/agi-format/v0.3.0/schemas/conformance-report-v0.1.0.json",
+  "title": ".agi conformance report v0.1.0",
+  "type": "object",
+  "required": ["$schema", "report_version", "implementation", "source_kind", "conformant", "format_version", "package", "checks", "error"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {"const": "https://raw.githubusercontent.com/salus-ryan/agi-format/v0.3.0/schemas/conformance-report-v0.1.0.json"},
+    "report_version": {"const": "0.1.0"},
+    "implementation": {
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1}
+      }
+    },
+    "source_kind": {"enum": ["directory", "archive"]},
+    "conformant": {"type": "boolean"},
+    "format_version": {"type": ["string", "null"]},
+    "package": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["name", "version", "content_sha256", "file_count", "uncompressed_bytes"],
+          "additionalProperties": false,
+          "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "version": {"type": "string", "minLength": 1},
+            "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "file_count": {"type": "integer", "minimum": 1},
+            "uncompressed_bytes": {"type": "integer", "minimum": 1}
+          }
+        }
+      ]
+    },
+    "checks": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": ["id", "status"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"enum": ["package-structure", "json-schema", "interface-registry", "safety-profile"]},
+          "status": {"const": "pass"}
+        }
+      }
+    },
+    "error": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["code", "message"],
+          "additionalProperties": false,
+          "properties": {
+            "code": {"const": "invalid-package"},
+            "message": {"type": "string", "minLength": 1}
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"conformant": {"const": true}}},
+      "then": {
+        "properties": {
+          "format_version": {"const": "0.1.0"},
+          "package": {"type": "object"},
+          "checks": {"minItems": 4, "maxItems": 4},
+          "error": {"type": "null"}
+        }
+      },
+      "else": {
+        "properties": {
+          "format_version": {"type": "null"},
+          "package": {"type": "null"},
+          "checks": {"maxItems": 0},
+          "error": {"type": "object"}
+        }
+      }
+    }
+  ]
+}

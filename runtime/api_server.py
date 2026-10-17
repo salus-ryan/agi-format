@@ -35,6 +35,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
+from runtime import __version__
 from runtime.security import SlidingWindowRateLimiter
 
 structlog.configure(
@@ -93,7 +94,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title=".agi Reference Agent",
-    version="0.2.0",
+    version=__version__,
     docs_url=None if os.environ.get("AGI_DISABLE_DOCS", "true").lower() == "true" else "/docs",
     redoc_url=None,
     lifespan=lifespan,

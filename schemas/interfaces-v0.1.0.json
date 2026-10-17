@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/salus-ryan/agi-format/main/schemas/interfaces-v0.1.0.json",
+  "$id": "https://raw.githubusercontent.com/salus-ryan/agi-format/v0.3.0/schemas/interfaces-v0.1.0.json",
   "format_version": "0.1.0",
   "interfaces": [
     "AlignmentChecker<Action, AlignmentConstraint[], boolean>",

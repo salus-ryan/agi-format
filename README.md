@@ -51,17 +51,23 @@ dependencies are intentionally not part of the default installation.
 ## CLI
 
 ```bash
+# Scaffold an independently authored, deny-by-default package
+agi init my-agent --author "Example Organization"
+
 # Full schema and interface-conformance validation
-agi validate skeleton/
+agi validate my-agent/
+
+# Emit portable conformance evidence
+agi validate my-agent/ --json --report conformance.json
 
 # Inspect architecture and safety policy
-agi inspect skeleton/
+agi inspect my-agent/
 
 # Produce a deterministic archive
-agi pack skeleton/ -o skeleton-agent.agi
+agi pack my-agent/ -o my-agent.agi
 
 # Safely unpack it (links, devices, traversal, and archive bombs are rejected)
-agi unpack skeleton-agent.agi -o unpacked/
+agi unpack my-agent.agi -o unpacked/
 ```
 
 The canonical schemas and interface registry are in [`schemas/`](schemas/):
@@ -71,9 +77,15 @@ The canonical schemas and interface registry are in [`schemas/`](schemas/):
 - `component-v0.1.0.json`
 - `goal-loop-v0.1.0.json`
 - `interfaces-v0.1.0.json`
+- `conformance-report-v0.1.0.json`
 
 The loader supports format version `0.1.0` exactly and fails closed on unknown
 versions, interfaces, unsafe references, missing policies, or malformed modules.
+Published schema identifiers are pinned to the immutable software release containing
+them rather than the mutable `main` branch.
+
+See [`docs/AUTHORING.md`](docs/AUTHORING.md) for the external-author workflow and
+[`action.yml`](action.yml) for reusable GitHub Actions validation.
 
 ## Reference runtime
 
@@ -190,12 +202,14 @@ and installation from the built wheel. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 ## Project structure
 
 ```text
-schemas/             Published JSON Schemas and interface registry
-skeleton/            Conforming v0.1.0 reference blueprint
-runtime/             Python loader and reference runtime
-scripts/             Deployment smoke checks
-tests/               Unit, integration, security, API, and conformance tests
-agi_cli.py            validate / inspect / pack / unpack / run
+schemas/             Published JSON Schemas, report schema, and interface registry
+skeleton/            Conforming v0.1.0 starter blueprint bundled by `agi init`
+docs/                 External authoring and conformance guidance
+runtime/              Python loader, conformance reporter, and reference runtime
+scripts/              Deployment smoke checks
+tests/                Unit, integration, security, API, and conformance tests
+action.yml            Reusable package-validation GitHub Action
+agi_cli.py             init / validate / inspect / pack / unpack / run
 modal_app.py          Authenticated Modal deployment
 SPEC.md               Normative format specification
 ```
