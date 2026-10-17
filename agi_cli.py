@@ -11,12 +11,14 @@ Usage:
 """
 
 import argparse
-import json
+import gzip
 import sys
 import tarfile
 from pathlib import Path
 
 import structlog
+
+from runtime.loader import AGILoadError, load_agi, safe_extract_archive
 
 structlog.configure(
     processors=[
@@ -28,8 +30,6 @@ structlog.configure(
 
 sys.stdout.reconfigure(line_buffering=True)
 
-from runtime.loader import AGILoadError, load_agi
-
 
 def cmd_pack(args: argparse.Namespace) -> None:
     """Pack a directory into a .agi archive."""
@@ -38,6 +38,13 @@ def cmd_pack(args: argparse.Namespace) -> None:
 
     if not source.is_dir():
         print(f"Error: {source} is not a directory")
+        sys.exit(1)
+    try:
+        output.resolve().relative_to(source.resolve())
+    except ValueError:
+        pass
+    else:
+        print("Error: output archive must be outside the source directory")
         sys.exit(1)
 
     # Validate first
@@ -48,10 +55,28 @@ def cmd_pack(args: argparse.Namespace) -> None:
         print(f"Validation failed: {e}")
         sys.exit(1)
 
-    # Pack
+    # Pack deterministically and reject links/devices.
     print(f"Packing {source} -> {output}")
-    with tarfile.open(output, "w:gz") as tar:
-        tar.add(source, arcname=source.name)
+    entries = [source, *sorted(source.rglob("*"), key=lambda path: path.as_posix())]
+    if any(path.is_symlink() for path in entries):
+        print("Error: .agi packages may not contain symbolic links")
+        sys.exit(1)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("wb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed:
+            with tarfile.open(fileobj=compressed, mode="w") as tar:
+                for path in entries:
+                    arcname = Path(source.name) / path.relative_to(source)
+                    info = tar.gettarinfo(str(path), arcname=str(arcname))
+                    info.uid = info.gid = 0
+                    info.uname = info.gname = ""
+                    info.mtime = 0
+                    info.mode = 0o755 if info.isdir() else 0o644
+                    if info.isfile():
+                        with path.open("rb") as handle:
+                            tar.addfile(info, handle)
+                    elif info.isdir():
+                        tar.addfile(info)
 
     size_mb = output.stat().st_size / (1024 * 1024)
     print(f"Created {output} ({size_mb:.2f} MB)")
@@ -67,8 +92,11 @@ def cmd_unpack(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     print(f"Unpacking {source} -> {output}")
-    with tarfile.open(source, "r:gz") as tar:
-        tar.extractall(output, filter="data")
+    try:
+        safe_extract_archive(source, output)
+    except AGILoadError as exc:
+        print(f"Extraction failed: {exc}")
+        sys.exit(1)
 
     print(f"Extracted to {output}")
 
@@ -115,7 +143,7 @@ def cmd_inspect(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     print(f"\n{'='*60}")
-    print(f"  .agi Package Inspector")
+    print("  .agi Package Inspector")
     print(f"{'='*60}")
     print(f"\n  Agent:   {package.name}")
     print(f"  Version: {package.version}")
@@ -130,14 +158,14 @@ def cmd_inspect(args: argparse.Namespace) -> None:
         print(f"  License: {agent['license']}")
 
     runtime = package.manifest["runtime"]
-    print(f"\n  Runtime Requirements:")
+    print("\n  Runtime Requirements:")
     print(f"    Min memory:      {runtime.get('min_memory_gb', '?')} GB")
     print(f"    GPU required:    {runtime.get('gpu_required', False)}")
     print(f"    GPU VRAM:        {runtime.get('min_gpu_vram_gb', 'N/A')} GB")
     print(f"    Sandbox:         {'required' if runtime.get('sandbox_required') else 'optional'}")
     print(f"    Entrypoint:      {runtime.get('entrypoint')}")
 
-    print(f"\n  Capabilities:")
+    print("\n  Capabilities:")
     for module_name in ["perception", "reasoning", "memory", "language", "action", "learning", "goals"]:
         module = package.load_module(module_name)
         components = module.get("components", [])
@@ -148,7 +176,7 @@ def cmd_inspect(args: argparse.Namespace) -> None:
             print(f"      Depends on: {', '.join(deps)}")
 
     # Safety inspection
-    print(f"\n  Safety Configuration:")
+    print("\n  Safety Configuration:")
     alignment = package.load_json("goals/alignment/alignment.json")
     constraints = alignment["config"]["constraints"]
     hard = [c for c in constraints if c["type"] == "hard"]
@@ -166,7 +194,7 @@ def cmd_inspect(args: argparse.Namespace) -> None:
         print(f"      [{t['severity']}] {t['id']}: {t['description']}")
 
     # Goal loop
-    print(f"\n  Agent Loop:")
+    print("\n  Agent Loop:")
     goal_loop = package.load_goal_loop()
     for step in goal_loop.get("steps", []):
         if "loop" in step and step.get("over"):

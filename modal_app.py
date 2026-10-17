@@ -64,12 +64,14 @@ image = (
     })
     .add_local_dir("skeleton", remote_path="/app/skeleton")
     .add_local_dir("runtime", remote_path="/app/runtime")
+    .add_local_dir("schemas", remote_path="/app/schemas")
 )
 
 # ── Volumes ──────────────────────────────────────────────────────────────────
 
 hf_cache_vol = modal.Volume.from_name("sal-model-cache")
 agent_memory_vol = modal.Volume.from_name("agi-agent-memory", create_if_missing=True)
+api_secret = modal.Secret.from_name("agi-agent-api")
 
 # ── App ──────────────────────────────────────────────────────────────────────
 
@@ -83,14 +85,18 @@ app = modal.App(name=APP_NAME)
 @app.function(
     image=image,
     gpu=GPU,
+    region="us-east",
     volumes={
         HF_CACHE_PATH: hf_cache_vol,
         MEMORY_PATH: agent_memory_vol,
     },
     timeout=3600,
     scaledown_window=5 * MINUTES,
+    max_containers=1,
+    restrict_modal_access=True,
+    secrets=[api_secret],
 )
-@modal.concurrent(max_inputs=10)
+@modal.concurrent(max_inputs=4)
 @modal.web_server(port=API_PORT, startup_timeout=10 * MINUTES)
 def agent():
     """Start vLLM (with LoRA) + FastAPI agent server.
@@ -152,6 +158,12 @@ def agent():
         "GPU": GPU,
         "API_PORT": str(API_PORT),
         "LORA_ADAPTER_PATH": LORA_ADAPTER_PATH,
+        "AGI_REQUIRE_AUTH": "true",
+        "AGI_DISABLE_DOCS": "true",
+        "AGI_ENABLE_ONLINE_TRAINING": "false",
+        "AGI_MAX_SESSIONS": "32",
+        "AGI_RATE_LIMIT_REQUESTS": "20",
+        "AGI_RATE_LIMIT_WINDOW_SECONDS": "60",
     }
     api_cmd = [
         "python", "-m", "uvicorn",

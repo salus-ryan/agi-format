@@ -16,7 +16,7 @@ agent's reasoning about what to explore next.
 import json
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import structlog
 

@@ -1,151 +1,205 @@
-# .agi File Format
+# `.agi` agent blueprint format
 
-A self-describing file format for AGI agent blueprints. A `.agi` file is a tar.gz archive containing a declarative specification of an autonomous agent with seven composable capabilities.
+[![CI](https://github.com/salus-ryan/agi-format/actions/workflows/ci.yml/badge.svg)](https://github.com/salus-ryan/agi-format/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Live agent**: `https://salus--agi-agent-agent.us-east.modal.run` (Qwen3-8B on L4 GPU, scales to zero)
+`.agi` is a versioned, inspectable archive format for describing an AI agent's
+capabilities, interfaces, safety policy, runtime requirements, and optional model
+artifacts. This repository contains the **v0.1.0 format**, a conforming skeleton,
+CLI tooling, and an **alpha reference runtime** backed by Qwen3-8B on Modal.
 
-## The Seven Capabilities
+> This project is an experimental agent format and runtime. It is not evidence of
+> artificial general intelligence, and the reference subprocess policy is not a
+> substitute for a container or microVM security boundary.
 
-| # | Capability | What it does | Why it's necessary |
-|---|------------|--------------|-------------------|
-| 1 | **Perception** | Multimodal input (text, vision/SigLIP, audio/Whisper, structured) | Can't engage with the world without it |
-| 2 | **Reasoning** | LLM inference (Qwen3-8B via vLLM), causal world model, planning | Can't solve novel problems without it |
-| 3 | **Memory** | Episodic vector store, semantic knowledge, working context | Can't accumulate expertise without it |
-| 4 | **Language** | NLU, NLG, formal languages, theory of mind | Can't collaborate with humans without it |
-| 5 | **Action** | Tool use, sandboxed execution, formal verification (Z3 + code checking) | Can't *do* anything without it |
-| 6 | **Learning** | Prioritized experience replay, online adaptation, anti-forgetting (EWC) | Frozen at training time without it |
-| 7 | **Goals** | Goal management, alignment constraints, escalation | No autonomy without it |
+**Deployment liveness:** <https://salus--agi-agent-agent.us-east.modal.run/health>
 
-## Quick Start
+## Format overview
+
+A `.agi` file is a deterministic `tar.gz` archive containing seven required
+capability modules:
+
+| Capability | Contract |
+|---|---|
+| Perception | Convert supported inputs into typed percepts |
+| Reasoning | Inference, planning, world modeling, and verification |
+| Memory | Episodic, semantic, working, and procedural stores |
+| Language | Understanding, generation, formal languages, and user modeling |
+| Action | Tool registry, execution policy, and feedback |
+| Learning | Replay, curriculum, consolidation, and optional adaptation |
+| Goals | Goal loop, decomposition, alignment, and escalation |
+
+The format and runtime are deliberately separate. A package declares behavior and
+constraints; a conforming host decides how interfaces are implemented. The Python
+reference runtime currently consumes package policy for tools, sandbox limits,
+planner bounds, replay capacity, alignment, and escalation. It does not provide a
+general third-party plugin loader yet.
+
+## Install
+
+Python 3.12 or newer is required.
 
 ```bash
-# Validate the skeleton agent
-python3 agi_cli.py validate skeleton/
+python -m venv .venv
+. .venv/bin/activate
+pip install -e '.[dev,api]'
+```
 
-# Inspect its architecture
-python3 agi_cli.py inspect skeleton/
+Optional groups are `verification`, `perception`, and `learning`. GPU learning
+dependencies are intentionally not part of the default installation.
 
-# Pack it into a .agi file
-python3 agi_cli.py pack skeleton/ -o agent.agi
+## CLI
 
-# Run the demo
-python3 demo.py
+```bash
+# Full schema and interface-conformance validation
+agi validate skeleton/
 
-# Deploy to Modal
-modal deploy modal_app.py
+# Inspect architecture and safety policy
+agi inspect skeleton/
 
-# Talk to the live agent
-curl -X POST https://salus--agi-agent-agent.us-east.modal.run/chat \
+# Produce a deterministic archive
+agi pack skeleton/ -o skeleton-agent.agi
+
+# Safely unpack it (links, devices, traversal, and archive bombs are rejected)
+agi unpack skeleton-agent.agi -o unpacked/
+```
+
+The canonical schemas and interface registry are in [`schemas/`](schemas/):
+
+- `manifest-v0.1.0.json`
+- `module-v0.1.0.json`
+- `component-v0.1.0.json`
+- `goal-loop-v0.1.0.json`
+- `interfaces-v0.1.0.json`
+
+The loader supports format version `0.1.0` exactly and fails closed on unknown
+versions, interfaces, unsafe references, missing policies, or malformed modules.
+
+## Reference runtime
+
+The reference pipeline is:
+
+```text
+perceive -> ground -> remember -> plan -> verify -> align -> act -> learn
+```
+
+It includes Qwen3-8B inference through vLLM, session-scoped memory, candidate plan
+search, a causal/learned world model, a semantic knowledge graph, formal checks,
+and prioritized replay.
+
+Package configuration is used to bound planner candidates, replay capacity, enabled
+tools, subprocess resources, filesystem access, network destinations, alignment,
+and escalation. The default skeleton disables shell, Python, and outbound network
+access. File operations are confined to each session workspace.
+
+### Run the API locally
+
+Start an OpenAI-compatible model server, then:
+
+```bash
+export AGI_API_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export AGI_PACKAGE_PATH="$PWD/skeleton"
+export MEMORY_PATH="$PWD/.agent-memory"
+export VLLM_BASE_URL="http://127.0.0.1:8000"
+uvicorn runtime.api_server:app --host 127.0.0.1 --port 8080
+```
+
+All agent and state endpoints require a bearer token. `/health` and `/ready` are
+public operational probes.
+
+```bash
+curl http://127.0.0.1:8080/chat \
+  -H "Authorization: Bearer $AGI_API_KEY" \
+  -H "X-Session-ID: demo" \
   -H "Content-Type: application/json" \
-  -d '{"message": "What are you?"}'
+  -d '{"message":"What can you do?","max_tokens":256}'
 ```
 
-## API Endpoints
+Session IDs isolate conversation history, memories, goals, workspaces, and learning
+state. Requests in one session are serialized. Deployments should use one container
+per persistent store or replace the reference JSON stores with transactional storage.
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Agent health + basic stats |
-| `/status` | GET | Full status (steps, memories, tokens, world model, learning) |
-| `/chat` | POST | Talk to the agent (`{"message": "...", "max_tokens": 2048}`) |
-| `/memories` | GET | Episodic memory contents |
-| `/action_log` | GET | Action history |
-| `/world_model` | GET | Causal graph summary + geolocation state |
-| `/geolocation` | GET | 5-dimensional location snapshot |
-| `/learning` | GET | Replay buffer, learner, consolidator stats |
+### API endpoints
 
-## Project Structure
+| Endpoint | Auth | Purpose |
+|---|---:|---|
+| `GET /health` | No | Process liveness |
+| `GET /ready` | No | Package and model readiness |
+| `POST /chat` | Yes | Run one agent step |
+| `GET /status` | Yes | Session runtime status |
+| `GET /memories` | Yes | Session episodic memories |
+| `GET /action_log` | Yes | Session tool audit trail |
+| `GET /world_model` | Yes | Session world-model summary |
+| `GET /knowledge` | Yes | Session knowledge summary |
+| `GET /dynamics` | Yes | Learned transition summary |
+| `GET /learning` | Yes | Replay and adaptation status |
+| `POST /train` | Yes | Trigger adaptation for the reserved `operator` session when explicitly enabled |
 
+Request bodies and session IDs are bounded and validated. The API uses deny-by-default
+CORS, bearer authentication, per-credential rate limiting, bounded session caches, and
+redacted error responses.
+
+## Action security
+
+The reference tool runner provides defense in depth:
+
+- no `shell=True`;
+- command allowlists and shell-operator rejection;
+- a minimal subprocess environment with no inherited credentials;
+- filesystem confinement using resolved paths;
+- CPU, memory, file, process, and descriptor limits on supported POSIX hosts;
+- deny-by-default networking with domain allowlists and private-address blocking;
+- no redirects, arbitrary ports, or POST requests by default;
+- Python execution disabled by default.
+
+For hostile workloads, place the entire runtime inside an additional container,
+microVM, or equivalent boundary with an egress proxy. See [`SECURITY.md`](SECURITY.md).
+
+## Learning safety
+
+Retrieval learning and replay curation are active. Parametric LoRA updates are
+**disabled by default** and require `AGI_ENABLE_ONLINE_TRAINING=true`.
+
+When enabled, the trainer:
+
+1. selects high-reward, deduplicated, secret-filtered examples;
+2. creates a deterministic held-out split;
+3. refuses to train without at least 6 GB of free GPU memory;
+4. trains into a staging directory;
+5. rejects validation-loss regressions;
+6. versions the previous adapter;
+7. promotes only after vLLM accepts the candidate; and
+8. rolls back and writes an audit record on failure.
+
+Operators should still review training data and evaluation evidence before enabling
+weight updates in a sensitive deployment.
+
+## Development
+
+```bash
+pytest -q
+ruff check .
+python -m build
+python -m twine check dist/*
+python scripts/smoke_deployment.py --url http://127.0.0.1:8080 --api-key "$AGI_API_KEY"
 ```
-agi-format/
-├── SPEC.md                      # Full format specification
-├── modal_app.py                 # Modal deployment (L4 GPU, vLLM + FastAPI)
-├── agi_cli.py                   # CLI: pack, unpack, validate, inspect, run
-├── demo.py                      # Non-interactive demo
-├── runtime/                     # Python runtime
-│   ├── types.py                 # Core type definitions (Pydantic-style dataclasses)
-│   ├── loader.py                # .agi file loader + validator
-│   ├── modules.py               # Skeleton module implementations
-│   ├── kernel.py                # Agent loop executor
-│   ├── live_modules.py          # Real module implementations (LLM, vector memory, etc.)
-│   ├── api_server.py            # FastAPI server for the agent
-│   ├── geolocation.py           # 5-dimensional digital location
-│   ├── world_model.py           # Causal graph seeded from geolocation
-│   ├── perception.py            # Multimodal perception (text, vision, audio, structured)
-│   ├── verification.py          # Formal verification (Z3, AST, sandboxed execution)
-│   └── learning.py              # Experience replay, online learning, anti-forgetting
-└── skeleton/                    # Skeleton .agi contents (28 JSON config files)
-    ├── manifest.json            # Root manifest
-    ├── perception/              # 4 modality adapters + grounding
-    ├── reasoning/               # Inference engine, world model, planner, verifier
-    ├── memory/                  # Episodic, semantic, working, procedural
-    ├── language/                # NLU, NLG, formal languages, theory of mind
-    ├── action/                  # Tools, sandbox, feedback loop
-    ├── learning/                # Online, replay, curriculum, consolidation
-    ├── goals/                   # Goal loop, alignment, decomposition, escalation
-    └── weights/                 # Model weights (stubs -- real weights on Modal volume)
+
+CI runs conformance tests, security regressions, API tests, a clean package build,
+and installation from the built wheel. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+## Project structure
+
+```text
+schemas/             Published JSON Schemas and interface registry
+skeleton/            Conforming v0.1.0 reference blueprint
+runtime/             Python loader and reference runtime
+scripts/             Deployment smoke checks
+tests/               Unit, integration, security, API, and conformance tests
+agi_cli.py            validate / inspect / pack / unpack / run
+modal_app.py          Authenticated Modal deployment
+SPEC.md               Normative format specification
 ```
 
-## Architecture
+## License
 
-```
-                    ┌──────────────┐
-                    │  Geolocation │ (root node)
-                    │  5 dimensions│
-                    └──────┬───────┘
-                           │ seeds
-                    ┌──────▼───────┐
-                    │  World Model │ (causal graph)
-                    │  nodes+edges │
-                    └──────┬───────┘
-                           │ context
- input ──► perceive ──► remember ──► reason ──► verify ──► align ──► act ──► learn
-           (multi-     (vector     (Qwen3-8B  (Z3/AST    (hard     (tool   (replay
-            modal)      store)      + world    + exec)    const.)    exec)   buffer
-                                    context)                                + EWC)
-```
-
-Every action passes through:
-1. **Alignment check** -- hard constraints that can never be overridden
-2. **Formal verification** -- code syntax/type/execution checking when applicable
-3. **Sandbox enforcement** -- resource limits, filesystem/network restrictions
-4. **Escalation rules** -- conditions that require human approval
-
-## Geolocation: The Root of the World Model
-
-A digital agent's "location" is five-dimensional:
-
-| Dimension | What it means | Example |
-|-----------|---------------|---------|
-| **Computational** | Where the hardware is | Modal us-east, L4 GPU, 24GB VRAM |
-| **Jurisdictional** | Which laws apply | US, CCPA, SOC2 |
-| **Temporal** | When (always live) | 2026-10-16, Friday, Q4 |
-| **Relational** | Who owns/operates/talks to the agent | Salus, workspace: salus |
-| **Informational** | Knowledge boundary | Qwen3 cutoff 2025-03, N episodes, M tools |
-
-Everything in the world model is conditioned on this state.
-
-## Learning System
-
-The agent improves with use through three mechanisms:
-
-1. **Prioritized Replay Buffer** -- stores (state, action, observation, reward) tuples with priority sampling based on TD error + novelty
-2. **Online Learner** -- periodically samples batches from replay buffer and updates priorities (LoRA fine-tuning when GPU headroom allows)
-3. **Consolidator** -- monitors per-domain performance for regression detection, replays old experiences to prevent forgetting
-
-## Safety by Design
-
-A `.agi` file is **malformed and will not load** without:
-- `goals/alignment/alignment.json` -- hard constraints the agent cannot override
-- `action/sandbox/sandbox.json` -- resource and access limits
-- `goals/escalation/escalation.json` -- when to stop and ask a human
-
-The agent cannot modify its own alignment constraints. Only a human operator can.
-
-## Dependencies
-
-- Python 3.12+
-- structlog, numpy, httpx (core)
-- vllm, huggingface-hub (Modal deployment)
-- fastapi, uvicorn (API server)
-- z3-solver (optional, formal verification)
-- transformers, pillow (optional, vision/audio perception)
+MIT. See [`LICENSE`](LICENSE).

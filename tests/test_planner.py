@@ -1,8 +1,7 @@
 """Tests for the plan search module."""
 
-import asyncio
 
-from runtime.planner import PlanSearch, Plan, PlanResult
+from runtime.planner import Plan, PlanResult, PlanSearch
 
 
 class TestPlan:

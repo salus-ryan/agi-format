@@ -1,5 +1,8 @@
 # .agi File Format Specification v0.1.0
 
+**Status:** Alpha. This document is normative for format version `0.1.0`; the Python
+loader and the JSON Schemas in `schemas/` are the conformance reference.
+
 ## Overview
 
 A `.agi` file is a **tar.gz archive** containing a self-describing AGI agent blueprint.
@@ -100,7 +103,7 @@ required capabilities, and runtime requirements.
 
 ```json
 {
-  "$schema": "https://agi-format.org/schemas/manifest/v0.1.0.json",
+  "$schema": "https://raw.githubusercontent.com/salus-ryan/agi-format/main/schemas/manifest-v0.1.0.json",
   "format_version": "0.1.0",
   "agent": {
     "name": "string (required)",
@@ -158,7 +161,9 @@ dependencies, and interface contracts.
 
 ## Interfaces
 
-Modules communicate through typed interfaces. The core types:
+Modules communicate through typed interfaces. Interface identifiers MUST be present
+in `schemas/interfaces-v0.1.0.json`; unknown identifiers are a conformance error. The
+core types are:
 
 | Type ID               | Description                                    |
 |-----------------------|------------------------------------------------|
@@ -275,7 +280,9 @@ A conforming `.agi` file MUST include:
 3. **escalation.json** -- Conditions under which the agent must stop and ask a human
 
 A runtime MUST enforce these before executing any action. An agent without these
-files is malformed and MUST NOT be loaded.
+files is malformed and MUST NOT be loaded. Merely declaring a sandbox is not
+enforcement: a conforming host MUST apply filesystem, process, network, and resource
+controls outside model-generated text. Network access is deny-by-default in v0.1.0.
 
 ## Weights
 
@@ -304,10 +311,26 @@ can contain:
 
 ## Versioning & Compatibility
 
-- Format version follows semver.
-- Major version bumps break backward compatibility.
-- Runtimes declare which format versions they support.
-- Agents declare minimum format version in `manifest.json`.
+- Format versions follow semantic versioning.
+- Major version bumps may break backward compatibility.
+- A runtime MUST declare the exact versions it supports and reject unknown versions.
+- A v0.1.0 package declares `"format_version": "0.1.0"`; version ranges are not supported.
+- Package `agent.version` is independent from `format_version`.
+
+## Conformance
+
+A conforming v0.1.0 package MUST pass all published schemas and semantic checks:
+
+1. every reference is relative, path-confined, and points to an object-valued JSON file;
+2. all seven modules exist and use registered interfaces;
+3. component declarations and component names agree;
+4. alignment contains a hard constraint;
+5. sandbox networking uses an allowlist policy and declares resource limits;
+6. escalation contains uniquely identified triggers; and
+7. the goal-loop entrypoint passes `goal-loop-v0.1.0.json`.
+
+Archives MUST reject path traversal, links, special devices, excessive member counts,
+and excessive expanded size. The reference CLI emits deterministic archives.
 
 ## Reference Implementation
 
@@ -319,11 +342,11 @@ capabilities, deployed on Modal with Qwen3-8B via vLLM.
 ```
 input -> perceive -> ground -> remember -> plan_search -> reason -> verify -> align -> act -> learn
            |           |          |            |              |         |        |        |       |
-        [multi-     [LLM       [episodic   [generate N   [Qwen3-8B [Z3/AST  [hard   [shell  [replay
-         modal]     entity     + semantic   candidates,   + world   + exec]  const.  file    buffer
-                    extract    + procedural simulate,              verify]  check]  web     + LoRA
-                    -> world   + knowledge  select best,                           code]   + dynamics
-                    model]     graph]       keep/discard]                                   + knowledge]
+        [multi-     [LLM       [episodic   [generate N   [Qwen3-8B [Z3/AST  [hard   [policy [replay
+         modal]     entity     + semantic   candidates,   + world   + exec]  const.  gated   buffer
+                    extract    + procedural simulate,              verify]  check]  tools]  + optional
+                    -> world   + knowledge  select best,                                   gated LoRA
+                    model]     graph]       keep/discard]                                  + dynamics]
 ```
 
 ### Module Implementations
@@ -334,8 +357,8 @@ input -> perceive -> ground -> remember -> plan_search -> reason -> verify -> al
 | **Reasoning** | `live_modules.py` + `planner.py` | Qwen3-8B via vLLM. Plan search generates N candidates, simulates against world model, keeps or discards (autoresearch pattern). Multi-turn tool loop for iterative execution. |
 | **Memory** | `live_modules.py` + `knowledge.py` | Four subsystems: episodic (vector store, LLM-backed embeddings), semantic (SPO triple knowledge graph with conflict detection and decay), procedural (learned skill templates), working (7-slot bounded with relevance scoring and eviction) |
 | **Language** | `live_modules.py` | LLM-backed NLU/NLG with context injection: geolocation, world model, knowledge graph, working memory, user model, goal stack, procedural memory |
-| **Action** | `live_modules.py` | Real tool execution: shell, file_read, file_write, web_request, python_eval. Sandboxed (timeout, path restrictions, blocked commands). Escalation triggers evaluated on every tool call. |
-| **Learning** | `learning.py` + `lora_trainer.py` + `world_model.py` | Prioritized replay buffer (50K). LoRA training on shared GPU (85% inference / 15% training time-slice). Learned dynamics model (transition probabilities per domain/tool pair). Consolidator with domain regression detection. High-reward episodes promoted into prompt context. |
+| **Action** | `secure_tools.py` + `live_modules.py` | Deny-by-default tools, argv execution without a shell, command/domain allowlists, path confinement, stripped subprocess environments, resource limits, and escalation checks. Shell, Python, and network are disabled in the reference blueprint. |
+| **Learning** | `learning.py` + `lora_trainer.py` + `world_model.py` | Prioritized replay and learned dynamics. Parametric LoRA training is operator opt-in, requires measured GPU headroom, uses curated secret-filtered data and a deterministic holdout, and supports evaluation-gated promotion, adapter versioning, audit, and rollback. |
 | **Goals** | `live_modules.py` | Persistent goal stack with decomposition and subtask tracking. Hard alignment constraints checked on every response. Escalation enforcement on financial, system-modification, and external POST actions. |
 
 ### Theory of Mind
@@ -359,10 +382,11 @@ Three layers:
 ### Deployment
 
 - **Platform**: Modal (serverless GPU)
-- **GPU**: L4 (24GB VRAM), 85% inference / 15% reserved for LoRA training
-- **Model**: Qwen3-8B via vLLM with LoRA adapter hot-loading
-- **Memory**: Persistent volume for episodic memory, knowledge graph, replay buffer, goal stack, and LoRA adapters
-- **API**: FastAPI on port 8080, endpoints for chat, health, status, memory, knowledge, dynamics, world model, learning, and manual training trigger
+- **GPU**: L4 (24GB VRAM)
+- **Model**: Qwen3-8B via vLLM; optional LoRA adapter hot-loading
+- **Memory**: Session-namespaced persistent volume for episodic memory, knowledge graph, replay buffer, and goals
+- **API**: Bearer-authenticated FastAPI with validated session IDs, bounded inputs, per-session serialization, per-credential rate limits, deny-by-default CORS, and separate liveness/readiness probes
+- **Isolation**: One Modal container per persistent store; high-risk tools disabled by the packaged policy
 
 ## MIME Type
 

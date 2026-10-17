@@ -13,7 +13,7 @@ grows as the agent observes the world and infers causal structure.
 import json
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
@@ -380,7 +380,7 @@ class WorldModel:
         # Store the observation itself as a node
         obs_node = self._add_node("observation", observation[:100], {
             "full_text": observation[:500],
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }, confidence=0.9)
 
         # Link observation to the agent

@@ -4,6 +4,10 @@
   "input_type": "State, Goal",
   "output_type": "Plan",
   "config": {
+    "reference_runtime": {
+      "candidate_count": 3,
+      "max_plan_steps": 5
+    },
     "algorithm": {
       "type": "hybrid_htn_mcts",
       "description": "Hierarchical Task Network for structured decomposition + Monte Carlo Tree Search for uncertain domains",

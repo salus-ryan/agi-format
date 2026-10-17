@@ -13,7 +13,6 @@ import ast
 import subprocess
 import sys
 import tempfile
-import textwrap
 import time
 from pathlib import Path
 
@@ -64,55 +63,51 @@ class Z3Backend:
         except ImportError:
             log.info("z3_backend_unavailable")
 
-    def check_satisfiable(self, constraints_code: str, timeout_ms: int = 30000) -> VerificationResult:
-        """Check if a set of Z3 constraints is satisfiable.
-
-        constraints_code: Python code that uses z3 to define and check constraints.
-        Must define a variable `result` that is True/False and optionally `model_str`.
-        """
+    def check_satisfiable(self, constraints_smt2: str, timeout_ms: int = 30000) -> VerificationResult:
+        """Check SMT-LIB2 assertions without executing Python from the caller."""
         if not self.available:
             return VerificationResult(False, "z3", "Z3 not installed")
 
         start = time.time()
         try:
-            namespace = {"z3": self.z3}
-            exec(constraints_code, namespace)
-            verified = bool(namespace.get("result", False))
-            model_str = namespace.get("model_str", "")
-            elapsed = (time.time() - start) * 1000
-
+            solver = self.z3.Solver()
+            solver.set(timeout=max(1, min(timeout_ms, 30_000)))
+            solver.add(*self.z3.parse_smt2_string(constraints_smt2))
+            status = solver.check()
+            verified = status == self.z3.sat
+            model_str = str(solver.model()) if verified else str(status)
             return VerificationResult(
                 verified=verified,
                 backend="z3",
-                message=f"{'SAT' if verified else 'UNSAT'}: {model_str}" if model_str else "",
-                elapsed_ms=elapsed,
+                message=f"{'SAT' if verified else status}: {model_str}",
+                elapsed_ms=(time.time() - start) * 1000,
             )
-        except Exception as e:
+        except Exception as exc:
             return VerificationResult(
-                False, "z3", f"Z3 execution error: {e}",
+                False,
+                "z3",
+                f"Invalid SMT-LIB2 constraints: {exc}",
                 elapsed_ms=(time.time() - start) * 1000,
             )
 
     def check_implication(self, premise: str, conclusion: str) -> VerificationResult:
-        """Check if premise logically implies conclusion using Z3.
-
-        Both are Z3 BoolRef expressions in string form.
-        """
-        if not self.available:
-            return VerificationResult(False, "z3", "Z3 not installed")
-
-        code = textwrap.dedent(f"""
-            s = z3.Solver()
-            # If premise AND NOT conclusion is unsatisfiable, then premise implies conclusion
-            premise_expr = {premise}
-            conclusion_expr = {conclusion}
-            s.add(premise_expr)
-            s.add(z3.Not(conclusion_expr))
-            check = s.check()
-            result = (check == z3.unsat)
-            model_str = str(s.model()) if check == z3.sat else "implication holds"
-        """)
-        return self.check_satisfiable(code)
+        """Check implication for Boolean SMT-LIB2 expressions."""
+        smt2 = f"(assert (and {premise} (not {conclusion})))"
+        counterexample = self.check_satisfiable(smt2)
+        if not counterexample.verified and "unsat" in counterexample.message.lower():
+            return VerificationResult(
+                True,
+                "z3",
+                "Implication holds",
+                elapsed_ms=counterexample.elapsed_ms,
+            )
+        return VerificationResult(
+            False,
+            "z3",
+            "Implication does not hold",
+            counterexample=counterexample.message,
+            elapsed_ms=counterexample.elapsed_ms,
+        )
 
 
 class CodeVerifier:

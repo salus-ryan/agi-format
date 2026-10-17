@@ -1,16 +1,16 @@
 """Core type definitions for the .agi runtime."""
 
-from typing import Any
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
+from typing import Any
 
 
-class ConstraintType(str, Enum):
+class ConstraintType(StrEnum):
     HARD = "hard"
     SOFT = "soft"
 
 
-class GoalStatus(str, Enum):
+class GoalStatus(StrEnum):
     PENDING = "pending"
     ACTIVE = "active"
     COMPLETED = "completed"
@@ -18,7 +18,7 @@ class GoalStatus(str, Enum):
     ABANDONED = "abandoned"
 
 
-class EscalationSeverity(str, Enum):
+class EscalationSeverity(StrEnum):
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"

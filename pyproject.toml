@@ -1,11 +1,80 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "agi-format"
-version = "0.1.0"
-description = "A file format specification and runtime for self-describing AGI agent blueprints"
+version = "0.2.0"
+description = "A versioned file format and reference runtime for self-describing agent blueprints"
+readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [
-    "structlog>=24.1.0",
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Salus"}]
+keywords = ["agents", "ai", "file-format", "runtime"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
+dependencies = [
+    "httpx>=0.27,<1",
+    "jsonschema[format]>=4.23,<5",
+    "numpy>=1.26,<3",
+    "structlog>=24.1,<26",
+]
+
+[project.optional-dependencies]
+api = [
+    "fastapi>=0.115,<1",
+    "pydantic>=2.10,<3",
+    "uvicorn>=0.34,<1",
+]
+verification = ["z3-solver>=4.13,<5; platform_system != 'Android'"]
+learning = [
+    "bitsandbytes>=0.45,<1; platform_system == 'Linux' and platform_machine == 'x86_64'",
+    "peft>=0.15,<1",
+    "torch>=2.5,<3",
+    "transformers>=4.51,<5",
+]
+perception = [
+    "pillow>=10,<12",
+    "transformers>=4.51,<5",
+]
+dev = [
+    "build>=1.2,<2",
+    "pytest>=8.3,<10",
+    "pytest-asyncio>=0.25,<2",
+    "ruff>=0.9,<1; platform_system != 'Android'",
+    "twine>=6,<7",
+]
+
+[project.urls]
+Homepage = "https://github.com/salus-ryan/agi-format"
+Repository = "https://github.com/salus-ryan/agi-format"
+Issues = "https://github.com/salus-ryan/agi-format/issues"
 
 [project.scripts]
 agi = "agi_cli:main"
+
+[tool.setuptools]
+py-modules = ["agi_cli"]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["runtime*"]
+
+[tool.setuptools.data-files]
+"share/agi-format/schemas" = ["schemas/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]

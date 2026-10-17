@@ -1,3 +1,15 @@
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
 *.agi
+.env
+.agent-memory/
+agent-memory/
+lora-adapter*/
+*.safetensors

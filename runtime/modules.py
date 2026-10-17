@@ -6,7 +6,7 @@ In the skeleton, they demonstrate the interface contracts and data flow.
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 
@@ -15,7 +15,6 @@ from runtime.types import (
     Action,
     AlignmentCheck,
     EscalationDecision,
-    EscalationSeverity,
     Goal,
     GoalStatus,
     Memory,
@@ -42,7 +41,7 @@ class PerceptionModule:
         if raw_input is None:
             return []
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         if isinstance(raw_input, str):
             percept = Percept(
@@ -243,7 +242,7 @@ class ActionModule:
         Skeleton: logs the action and returns a mock result.
         Real: would execute in a container/WASM sandbox with resource limits.
         """
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         log.info("executing_action", tool=action.tool, params=action.parameters)
 
         # Log the action

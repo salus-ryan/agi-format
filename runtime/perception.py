@@ -10,12 +10,9 @@ Each adapter is optional. The PerceptionPipeline auto-detects input
 modality and routes to the right adapter.
 """
 
-import base64
 import hashlib
 import json
-import time
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 
 import numpy as np
 import structlog
@@ -37,7 +34,7 @@ class TextAdapter:
             modality="text",
             content=text,
             embedding=embedding.tolist(),
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
             metadata={
                 "length": len(text),
                 "word_count": len(text.split()),
@@ -119,7 +116,7 @@ class VisionAdapter:
             modality="vision",
             content=f"image:{content_hash}",
             embedding=embedding,
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
             metadata=metadata,
         )
 
@@ -136,6 +133,7 @@ class VisionAdapter:
                 return None
 
         import io
+
         from PIL import Image
         img = Image.open(io.BytesIO(image_data))
         inputs = self._processor(images=img, return_tensors="pt")
@@ -195,7 +193,7 @@ class AudioAdapter:
         return Percept(
             modality="audio",
             content=transcription or f"audio:{content_hash}",
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
             metadata=metadata,
         )
 
@@ -212,7 +210,6 @@ class AudioAdapter:
             except ImportError:
                 return None
 
-        import io
         import numpy as np
 
         # Convert raw bytes to float32 array (assuming 16-bit PCM)
@@ -249,7 +246,7 @@ class StructuredAdapter:
             modality="structured",
             content=data,
             embedding=embedding.tolist(),
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
             metadata=metadata,
         )
 

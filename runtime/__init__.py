@@ -1,6 +1,3 @@
-"""
-agi-format runtime -- loads and executes .agi files.
+"""Loader and alpha reference runtime for declarative `.agi` agent blueprints."""
 
-A .agi file is a tar.gz archive containing a declarative AGI agent blueprint.
-This runtime interprets the blueprint and runs the agent loop.
-"""
+__version__ = "0.2.0"

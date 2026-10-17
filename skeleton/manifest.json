@@ -1,10 +1,10 @@
 {
-  "$schema": "https://agi-format.org/schemas/manifest/v0.1.0.json",
+  "$schema": "https://raw.githubusercontent.com/salus-ryan/agi-format/main/schemas/manifest-v0.1.0.json",
   "format_version": "0.1.0",
   "agent": {
     "name": "skeleton-agent",
     "version": "0.1.0",
-    "description": "Skeleton AGI agent demonstrating the .agi file format. All modules are stubs with defined interfaces.",
+    "description": "Reference agent demonstrating the .agi file format and its typed capability interfaces.",
     "author": "agi-format",
     "license": "MIT"
   },

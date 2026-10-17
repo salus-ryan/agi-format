@@ -3,23 +3,24 @@
 These test the full pipeline without an LLM (mock the LLM client).
 """
 
-import asyncio
 import json
-
-import pytest
 
 from runtime.geolocation import GeoLocation
 from runtime.knowledge import KnowledgeGraph
-from runtime.learning import ReplayBuffer, Experience, OnlineLearner, Consolidator
+from runtime.learning import Consolidator, Experience, OnlineLearner, ReplayBuffer
 from runtime.live_modules import (
-    ToolExecutor, WorkingMemory, UserModel, ProceduralMemory,
-    GoalStack, VectorMemory,
+    GoalStack,
+    ProceduralMemory,
+    ToolExecutor,
+    UserModel,
+    VectorMemory,
+    WorkingMemory,
 )
 from runtime.perception import PerceptionPipeline
-from runtime.planner import PlanSearch, Plan, PlanResult
+from runtime.planner import Plan, PlanResult, PlanSearch
 from runtime.types import EscalationDecision
 from runtime.verification import FormalVerifier
-from runtime.world_model import WorldModel, DynamicsModel
+from runtime.world_model import DynamicsModel, WorldModel
 
 
 class TestFullPipeline:
@@ -54,19 +55,20 @@ class TestFullPipeline:
         facts = kg.query(subject="python")
         assert len(facts) == 1
 
-    def test_plan_execute_learn(self):
+    def test_plan_execute_learn(self, tmp_path):
         """Test: plan -> tool execution -> dynamics update -> experience."""
         # Plan
         plan = Plan(
             description="List files in workspace",
-            steps=[{"tool": "shell", "params": {"command": "ls /tmp/agent-workspace"}}],
+            steps=[{"tool": "shell", "params": {"command": "ls"}}],
             predicted_outcome="file listing", predicted_reward=0.7,
             risk="dir might be empty", plan_id="test-1",
         )
+        assert plan.steps[0]["tool"] == "shell"
 
         # Execute
-        te = ToolExecutor()
-        result = te.execute("shell", {"command": "ls /tmp/agent-workspace"})
+        te = ToolExecutor(workspace=tmp_path)
+        result = te.execute("shell", {"command": "ls"})
         assert result["success"]
 
         # Update dynamics
@@ -179,6 +181,7 @@ class TestFullPipeline:
         # Before: no dynamics data
         pred_before = wm.predict("run python code", tool="python_eval", domain="coding")
         dynamics_before = [p for p in pred_before if p.get("source") == "learned_dynamics"]
+        assert dynamics_before == []
 
         # Record transitions
         for i in range(20):
@@ -251,8 +254,8 @@ class TestFullPipeline:
 
     def test_escalation_blocks_destructive_commands(self):
         """Test: escalation fires for irreversible actions (rm -rf, chmod, etc.)."""
-        from runtime.loader import load_agi
         from runtime.live_modules import LiveKernel
+        from runtime.loader import load_agi
 
         pkg = load_agi("skeleton")
         escalation_config = pkg.load_json("goals/escalation/escalation.json")
@@ -290,8 +293,8 @@ class TestFullPipeline:
 
     def test_escalation_repeated_failure(self):
         """Test: escalation fires after 3+ failures of the same tool call."""
-        from runtime.loader import load_agi
         from runtime.live_modules import LiveKernel
+        from runtime.loader import load_agi
 
         pkg = load_agi("skeleton")
 
@@ -321,9 +324,9 @@ class TestFullPipeline:
         ctx = gs.get_context()
         assert "Build AGI" in ctx
 
-    def test_action_log_tracking(self):
+    def test_action_log_tracking(self, tmp_path):
         """Test: ToolExecutor results can be logged to action_log."""
-        te = ToolExecutor()
+        te = ToolExecutor(workspace=tmp_path)
         action_log = []
 
         result = te.execute("shell", {"command": "echo test"})
@@ -363,8 +366,6 @@ class TestFullPipeline:
 
     def test_planner_escalation_integration(self):
         """Test: planner checks escalation before executing steps."""
-        ps = PlanSearch(n_candidates=3, max_plan_steps=5)
-
         # Create a plan with a destructive step
         plan = Plan(
             description="Delete everything",
