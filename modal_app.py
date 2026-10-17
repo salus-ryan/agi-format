@@ -160,6 +160,7 @@ def agent():
         "LORA_ADAPTER_PATH": LORA_ADAPTER_PATH,
         "AGI_REQUIRE_AUTH": "true",
         "AGI_DISABLE_DOCS": "true",
+        "AGI_REQUIRE_STRONG_TOOL_ISOLATION": "true",
         "AGI_ENABLE_ONLINE_TRAINING": "false",
         "AGI_MAX_SESSIONS": "32",
         "AGI_RATE_LIMIT_REQUESTS": "20",

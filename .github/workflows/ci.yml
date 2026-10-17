@@ -27,6 +27,11 @@ jobs:
         run: ruff check .
       - name: Test
         run: pytest -q
+      - name: Test real OCI tool boundary
+        run: |
+          docker pull --quiet alpine:3.20
+          export AGI_OCI_TEST_IMAGE="$(docker image inspect --format '{{index .RepoDigests 0}}' alpine:3.20)"
+          pytest -q tests/test_isolation.py::test_real_oci_boundary_when_ci_image_is_provided
       - name: Validate reference package
         run: agi validate skeleton/ --json --report /tmp/source-conformance.json
       - name: Self-test reusable conformance action

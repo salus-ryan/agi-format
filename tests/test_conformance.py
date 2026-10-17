@@ -53,6 +53,28 @@ def test_rejects_unknown_interface(tmp_path):
         load_agi(package)
 
 
+def test_rejects_process_tools_when_isolation_is_disabled(tmp_path):
+    package = copy_skeleton(tmp_path)
+    sandbox_path = package / "action" / "sandbox" / "sandbox.json"
+    sandbox = json.loads(sandbox_path.read_text())
+    sandbox["config"]["execution"]["shell_enabled"] = True
+    sandbox_path.write_text(json.dumps(sandbox))
+    with pytest.raises(AGILoadError, match="cannot enable shell"):
+        load_agi(package)
+
+
+def test_rejects_unpinned_oci_image(tmp_path):
+    package = copy_skeleton(tmp_path)
+    sandbox_path = package / "action" / "sandbox" / "sandbox.json"
+    sandbox = json.loads(sandbox_path.read_text())
+    sandbox["config"]["isolation"].update(
+        {"type": "oci", "runtime": "docker", "image": "example/tool:latest"}
+    )
+    sandbox_path.write_text(json.dumps(sandbox))
+    with pytest.raises(AGILoadError, match="pinned"):
+        load_agi(package)
+
+
 def test_rejects_component_path_traversal(tmp_path):
     package = copy_skeleton(tmp_path)
     module_path = package / "reasoning" / "module.json"

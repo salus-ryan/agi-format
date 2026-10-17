@@ -4,8 +4,8 @@
 
 | Version | Security fixes |
 |---|---|
-| `main` / `0.2.x` runtime | Yes |
-| Earlier runtime revisions | No |
+| `main` / latest `0.x` runtime | Yes |
+| Earlier runtime revisions | Critical fixes only |
 | `.agi` format `0.1.0` | Current |
 
 ## Reporting a vulnerability
@@ -37,8 +37,9 @@ content as untrusted. Important boundaries are:
 
 The reference implementation rejects archive traversal and links, validates package
 schemas and interfaces, requires bearer authentication for stateful endpoints,
-confines sessions, strips subprocess environments, uses tool and network allowlists,
-and disables shell, Python, networking, and parametric training by default.
+confines sessions, strips process environments, bounds output while draining child pipes,
+uses tool and network allowlists, and disables shell, Python, networking, and parametric
+training by default. Production mode refuses process tools without a configured OCI boundary.
 
 ## Deployment requirements
 
@@ -47,7 +48,9 @@ and disables shell, Python, networking, and parametric training by default.
 - Keep `AGI_REQUIRE_AUTH=true` outside local development.
 - Set explicit CORS origins or leave CORS disabled.
 - Keep one process/container per JSON-backed persistent store.
-- Put tool execution in a container or microVM for hostile workloads.
+- Keep `AGI_REQUIRE_STRONG_TOOL_ISOLATION=true` in production.
+- Leave process isolation `disabled`, or configure Docker/Podman with an image pinned by digest.
+- Prefer a dedicated worker container or microVM over access to a shared container daemon for hostile workloads.
 - Use an egress proxy and DNS controls for production network tools.
 - Never mount cloud credentials, SSH keys, or unrelated secrets into a tool-enabled runtime.
 - Leave `AGI_ENABLE_ONLINE_TRAINING=false` unless training data and evaluation are reviewed.
@@ -55,8 +58,9 @@ and disables shell, Python, networking, and parametric training by default.
 
 ## Known limitations
 
-The subprocess policy is defense in depth, not a hardened kernel boundary. DNS
-validation alone cannot eliminate every rebinding or proxy ambiguity. The in-process
-rate limiter does not coordinate across replicas. The bundled JSON persistence is
-intended for a single container and should be replaced with transactional storage
-before horizontal scaling.
+The local subprocess policy is for trusted development, not a hardened kernel boundary.
+The OCI backend depends on the host runtime, kernel, image, and daemon configuration; it is
+not equivalent to a microVM and deliberately provides no process network access. HTTP domain
+validation alone cannot eliminate every rebinding or proxy ambiguity. The in-process rate
+limiter does not coordinate across replicas. The bundled JSON persistence is intended for a
+single container and should be replaced with transactional storage before horizontal scaling.

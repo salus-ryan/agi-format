@@ -21,6 +21,7 @@ from typing import Any
 import httpx
 import structlog
 
+from runtime.isolation import BoundedProcessRunner, OCIIsolation
 from runtime.security import NetworkPolicy, SecurityError
 
 log = structlog.get_logger()
@@ -48,26 +49,52 @@ class ToolExecutor:
         network_post_enabled: bool = False,
         timeout_seconds: int = 30,
         max_memory_mb: int = 512,
+        process_isolation: str = "local",
+        oci_runtime: str = "docker",
+        oci_image: str = "",
+        require_strong_isolation: bool = False,
     ):
         default_workspace = Path(tempfile.gettempdir()) / "agi-agent-workspace"
         self.workspace = Path(workspace or os.environ.get("AGI_WORKSPACE", default_workspace)).resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
-        self.allowed_tools = set(allowed_tools or self.DEFAULT_TOOLS)
+        explicit_tools = allowed_tools is not None
+        self.allowed_tools = set(self.DEFAULT_TOOLS if allowed_tools is None else allowed_tools)
         if not shell_enabled:
             self.allowed_tools.discard("shell")
-        if python_enabled:
+        if python_enabled and not explicit_tools:
             self.allowed_tools.add("python_eval")
-        else:
+        elif not python_enabled:
             self.allowed_tools.discard("python_eval")
-        if allowed_domains:
+        process_isolation = process_isolation.lower()
+        if process_isolation not in {"disabled", "local", "oci"}:
+            raise SecurityError("Process isolation must be disabled, local, or oci")
+        process_tools_enabled = bool(self.allowed_tools & {"shell", "python_eval"})
+        if process_isolation == "disabled":
+            self.allowed_tools.difference_update({"shell", "python_eval"})
+            process_tools_enabled = False
+        if require_strong_isolation and process_tools_enabled and process_isolation != "oci":
+            raise SecurityError("Process tools require OCI isolation in production mode")
+        if allowed_domains and not explicit_tools:
             self.allowed_tools.add("web_request")
-        else:
+        elif not allowed_domains:
             self.allowed_tools.discard("web_request")
-        self.allowed_commands = frozenset(allowed_commands or self.DEFAULT_COMMANDS)
+        self.allowed_commands = frozenset(
+            self.DEFAULT_COMMANDS if allowed_commands is None else allowed_commands
+        )
         self.network_policy = NetworkPolicy(tuple(domain.lower() for domain in (allowed_domains or ())))
         self.network_post_enabled = network_post_enabled
         self.timeout_seconds = max(1, min(int(timeout_seconds), 60))
         self.max_memory_mb = max(64, min(int(max_memory_mb), 2048))
+        self.process_isolation = process_isolation
+        self.process_runner = BoundedProcessRunner(self.MAX_OUTPUT)
+        self.oci = None
+        if process_isolation == "oci" and process_tools_enabled:
+            self.oci = OCIIsolation(
+                runtime=oci_runtime,
+                image=oci_image,
+                workspace=self.workspace,
+                max_memory_mb=self.max_memory_mb,
+            )
         self.execution_count = 0
         self.success_count = 0
 
@@ -115,8 +142,10 @@ class ToolExecutor:
         return result
 
     def _minimal_env(self) -> dict[str, str]:
+        executable_dir = str(Path(sys.executable).resolve().parent)
+        safe_path = os.pathsep.join(dict.fromkeys([executable_dir, *os.defpath.split(os.pathsep)]))
         return {
-            "PATH": os.environ.get("PATH", os.defpath),
+            "PATH": safe_path,
             "HOME": str(self.workspace),
             "LANG": "C.UTF-8",
             "LC_ALL": "C.UTF-8",
@@ -137,6 +166,40 @@ class ToolExecutor:
             resource.setrlimit(resource.RLIMIT_NPROC, (16, 16))
 
         return apply_limits
+
+    def _run_process(self, argv: list[str]) -> dict[str, Any]:
+        if self.process_isolation == "disabled":
+            return {"success": False, "error": "Process execution is disabled"}
+        invocation = self.oci.command(argv) if self.oci else None
+        command = invocation.argv if invocation else argv
+        try:
+            completed = self.process_runner.run(
+                command,
+                cwd=self.workspace,
+                env=self._minimal_env(),
+                timeout=self.timeout_seconds,
+                preexec_fn=None if self.oci else self._resource_limits(),
+            )
+        except subprocess.TimeoutExpired:
+            cleaned = not invocation or self.oci.cleanup(invocation.name, self._minimal_env())
+            if not cleaned:
+                log.error("oci_timeout_cleanup_failed", container=invocation.name)
+            suffix = "" if cleaned else "; OCI cleanup failed"
+            return {
+                "success": False,
+                "error": f"Timeout after {self.timeout_seconds}s{suffix}",
+            }
+        result = {
+            "success": completed.returncode == 0,
+            "result": completed.stdout,
+            "stderr": completed.stderr,
+            "exit_code": completed.returncode,
+        }
+        if completed.stdout_truncated:
+            result["stdout_truncated"] = True
+        if completed.stderr_truncated:
+            result["stderr_truncated"] = True
+        return result
 
     def _exec_shell(self, command: str) -> dict[str, Any]:
         if not command.strip():
@@ -166,26 +229,7 @@ class ToolExecutor:
                     return {"success": False, "error": f"Path is outside workspace: {argument}"}
             if argument.startswith("--output") or argument in {"-o", "--files0-from"}:
                 return {"success": False, "error": "Output redirection options are disabled"}
-        try:
-            completed = subprocess.run(
-                argv,
-                shell=False,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_seconds,
-                cwd=self.workspace,
-                env=self._minimal_env(),
-                preexec_fn=self._resource_limits(),
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": f"Timeout after {self.timeout_seconds}s"}
-        return {
-            "success": completed.returncode == 0,
-            "result": completed.stdout[: self.MAX_OUTPUT],
-            "stderr": completed.stderr[: self.MAX_OUTPUT],
-            "exit_code": completed.returncode,
-        }
+        return self._run_process(argv)
 
     def _resolve_workspace_path(self, path: str) -> Path:
         candidate = Path(path)
@@ -239,24 +283,8 @@ class ToolExecutor:
         try:
             with handle:
                 handle.write(code)
-            completed = subprocess.run(
-                [sys.executable, "-I", "-S", handle.name],
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_seconds,
-                cwd=self.workspace,
-                env=self._minimal_env(),
-                preexec_fn=self._resource_limits(),
-                check=False,
-            )
-            return {
-                "success": completed.returncode == 0,
-                "result": completed.stdout[: self.MAX_OUTPUT],
-                "stderr": completed.stderr[: self.MAX_OUTPUT],
-                "exit_code": completed.returncode,
-            }
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": f"Timeout after {self.timeout_seconds}s"}
+            executable = "python3" if self.oci else sys.executable
+            return self._run_process([executable, "-I", "-S", handle.name])
         finally:
             Path(handle.name).unlink(missing_ok=True)
 

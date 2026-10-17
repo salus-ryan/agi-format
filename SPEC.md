@@ -300,6 +300,15 @@ files is malformed and MUST NOT be loaded. Merely declaring a sandbox is not
 enforcement: a conforming host MUST apply filesystem, process, network, and resource
 controls outside model-generated text. Network access is deny-by-default in v0.1.0.
 
+`sandbox.json` process isolation has three reference profiles: `disabled`, `local`, and
+`oci`. `disabled` cannot enable shell or Python execution. `local` is a constrained
+subprocess profile for trusted development and MAY be refused by a production host. `oci`
+requires Docker or Podman and an image reference pinned by SHA-256 digest. The reference
+OCI profile removes network access and Linux capabilities, enables no-new-privileges, uses
+a read-only root filesystem, imposes process/CPU/memory/output bounds, and mounts only the
+session workspace. Isolation fallback MUST be `deny`; a missing runtime or image is an
+error, never permission to execute locally.
+
 ## Weights
 
 Model weights are large and often shared across agents. The `weights/` directory
