@@ -5,6 +5,36 @@ The `.agi` format has an independent version declared in each package manifest.
 
 ## [Unreleased]
 
+## [0.5.0]
+
+`.agi` format 0.2.0 is a breaking redesign. The package is now a boundary policy, not a
+cognitive-architecture blueprint. The 0.1.0 format and the agent runtime remain available at `v0.4.0`.
+
+### Added
+
+- `policy.json`: declared tools with scopes and approval flags, a per-session action budget,
+  sandbox limits, and deterministic escalation triggers with parameter patterns.
+- `runtime.policy`: `Policy.evaluate` (allow/deny/escalate) and `PolicyEnforcer`, which applies
+  the policy before every effect and fails closed without an explicit approval.
+- Ed25519 package signing (`agi keygen`, `agi sign`, `--trusted-key`) over a content digest
+  that excludes `signature.json`.
+- `agi check` to dry-run one decision against a package.
+
+### Removed
+
+- The seven required capability modules, the interface registry, `goal_loop.json`, and the
+  alignment constraints judged by an LLM.
+- The reference agent runtime (LLM kernel, planner, world model, memory, learning, LoRA,
+  perception), the FastAPI server, the Modal deployment, and `agi run`.
+
+### Security
+
+- Shell arguments may no longer reach host files through `--files0-from`, `--output`, or
+  option values (`--opt=/path`, `-o/path`, `~`) outside the workspace.
+- `web_request` connects to the address it validated (with the original Host header and
+  SNI), so a second DNS answer can't redirect it to a private address.
+- Any resolution that includes a non-global address is rejected.
+
 ## [0.4.0] - 2026-10-17
 
 ### Added

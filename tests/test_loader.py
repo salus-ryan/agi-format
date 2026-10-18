@@ -1,72 +1,63 @@
 """Tests for the .agi loader and CLI."""
 
+import json
 import subprocess
 import sys
+from pathlib import Path
 
 from runtime.loader import load_agi
 
-SKELETON_PATH = "skeleton"
+ROOT = Path(__file__).resolve().parents[1]
+SKELETON = ROOT / "skeleton"
 
 
-class TestLoader:
-    def test_load_skeleton(self):
-        pkg = load_agi(SKELETON_PATH)
-        assert pkg.name == "skeleton-agent"
-        assert pkg.version == "0.1.0"
-
-    def test_load_json(self):
-        pkg = load_agi(SKELETON_PATH)
-        alignment = pkg.load_json("goals/alignment/alignment.json")
-        assert "config" in alignment
-        assert "constraints" in alignment["config"]
-
-    def test_required_safety_files(self):
-        pkg = load_agi(SKELETON_PATH)
-        # These must exist for a valid .agi package
-        alignment = pkg.load_json("goals/alignment/alignment.json")
-        sandbox = pkg.load_json("action/sandbox/sandbox.json")
-        escalation = pkg.load_json("goals/escalation/escalation.json")
-        assert alignment is not None
-        assert sandbox is not None
-        assert escalation is not None
+def cli(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(ROOT / "agi_cli.py"), *args],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        check=False,
+    )
 
 
-class TestCLI:
-    def test_validate(self):
-        result = subprocess.run(
-            [sys.executable, "agi_cli.py", "validate", SKELETON_PATH],
-            capture_output=True, text=True,
-        )
-        assert result.returncode == 0
+def test_load_skeleton_exposes_policy():
+    with load_agi(SKELETON) as package:
+        assert package.name == "skeleton-agent"
+        assert package.format_version == "0.2.0"
+        assert set(package.policy.tools) == {"file_read", "file_write"}
+        assert package.policy.tools["file_write"].requires_approval is True
+        assert package.policy.max_actions_per_session == 100
+        assert package.signature is None
 
-    def test_inspect(self):
-        result = subprocess.run(
-            [sys.executable, "agi_cli.py", "inspect", SKELETON_PATH],
-            capture_output=True, text=True,
-        )
-        assert result.returncode == 0
-        assert "skeleton-agent" in result.stdout
 
-    def test_pack_and_unpack(self):
-        import os
-        import tempfile
+def test_validate_and_inspect():
+    assert cli("validate", str(SKELETON)).returncode == 0
+    inspected = cli("inspect", str(SKELETON))
+    assert inspected.returncode == 0
+    assert "skeleton-agent" in inspected.stdout
+    assert "file_write (fs:write) [approval required]" in inspected.stdout
+    assert "credential_paths" in inspected.stdout
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            agi_path = os.path.join(tmpdir, "test.agi")
-            # Pack
-            result = subprocess.run(
-                [sys.executable, "agi_cli.py", "pack", SKELETON_PATH, "-o", agi_path],
-                capture_output=True, text=True,
-            )
-            assert result.returncode == 0
-            assert os.path.exists(agi_path)
 
-            # Unpack
-            unpack_dir = os.path.join(tmpdir, "unpacked")
-            result = subprocess.run(
-                [sys.executable, "agi_cli.py", "unpack", agi_path, "-o", unpack_dir],
-                capture_output=True, text=True,
-            )
-            assert result.returncode == 0
-            # Unpacked archive has skeleton/ subdir containing manifest.json
-            assert os.path.exists(os.path.join(unpack_dir, "skeleton", "manifest.json"))
+def test_check_reports_each_verdict():
+    allowed = cli("check", str(SKELETON), "file_read", "--params", '{"path": "notes.txt"}')
+    assert allowed.returncode == 0
+    assert json.loads(allowed.stdout)["verdict"] == "allow"
+
+    escalated = cli("check", str(SKELETON), "file_read", "--params", '{"path": ".env"}')
+    assert escalated.returncode == 2
+    assert json.loads(escalated.stdout)["trigger_id"] == "credential_paths"
+
+    denied = cli("check", str(SKELETON), "shell", "--params", '{"command": "ls"}')
+    assert denied.returncode == 2
+    assert json.loads(denied.stdout)["verdict"] == "deny"
+
+
+def test_pack_and_unpack(tmp_path):
+    archive = tmp_path / "test.agi"
+    assert cli("pack", str(SKELETON), "-o", str(archive)).returncode == 0
+    unpacked = tmp_path / "unpacked"
+    assert cli("unpack", str(archive), "-o", str(unpacked)).returncode == 0
+    assert (unpacked / "skeleton" / "manifest.json").is_file()
+    assert (unpacked / "skeleton" / "policy.json").is_file()

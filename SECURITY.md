@@ -4,9 +4,10 @@
 
 | Version | Security fixes |
 |---|---|
-| `main` / latest `0.x` runtime | Yes |
-| Earlier runtime revisions | Critical fixes only |
-| `.agi` format `0.1.0` | Current |
+| `main` / latest `0.x` release | Yes |
+| Earlier releases | Critical fixes only |
+| `.agi` format `0.2.0` | Current |
+| `.agi` format `0.1.0` (`v0.4.0` and earlier) | Unsupported |
 
 ## Reporting a vulnerability
 
@@ -25,42 +26,34 @@ coordinate remediation, and credit reporters who want attribution.
 
 ## Threat model
 
-The runtime treats all user input, model output, package content, memories, and web
-content as untrusted. Important boundaries are:
+Package content, model output, tool parameters, and web content are all untrusted. The
+important boundaries are:
 
-1. archive/package parsing;
-2. API authentication and session selection;
-3. model-generated tool calls;
-4. filesystem and network access;
-5. persisted memory and training data; and
-6. adapter promotion.
+1. archive and package parsing;
+2. signature verification and key trust;
+3. policy evaluation before every effect, including approval handling; and
+4. the reference tool sandbox (filesystem, processes, network).
 
-The reference implementation rejects archive traversal and links, validates package
-schemas and interfaces, requires bearer authentication for stateful endpoints,
-confines sessions, strips process environments, bounds output while draining child pipes,
-uses tool and network allowlists, and disables shell, Python, networking, and parametric
-training by default. Production mode refuses process tools without a configured OCI boundary.
+The reference implementation rejects archive traversal and links, validates schemas and
+cross-field policy rules, verifies Ed25519 signatures over a content digest, makes every
+decision deterministically from the policy, denies escalations without an explicit approval,
+strips process environments, bounds output while draining child pipes, and pins outbound
+connections to validated public addresses.
 
-## Deployment requirements
+## Host requirements
 
-- Generate `AGI_API_KEY` with at least 256 bits of entropy and store it in a secret manager.
-- Do not expose the internal vLLM port.
-- Keep `AGI_REQUIRE_AUTH=true` outside local development.
-- Set explicit CORS origins or leave CORS disabled.
-- Keep one process/container per JSON-backed persistent store.
-- Keep `AGI_REQUIRE_STRONG_TOOL_ISOLATION=true` in production.
-- Leave process isolation `disabled`, or configure Docker/Podman with an image pinned by digest.
-- Prefer a dedicated worker container or microVM over access to a shared container daemon for hostile workloads.
-- Use an egress proxy and DNS controls for production network tools.
-- Never mount cloud credentials, SSH keys, or unrelated secrets into a tool-enabled runtime.
-- Leave `AGI_ENABLE_ONLINE_TRAINING=false` unless training data and evaluation are reviewed.
-- Monitor action logs, authentication failures, rate limits, and adapter audit records.
+- Pass `trusted_keys` (or `--trusted-key`) when loading packages from anyone you do not control.
+- Keep signing keys out of agent environments. A key that can be read by the agent can widen its own boundary.
+- Route every tool, including host-defined ones, through `PolicyEnforcer` or an equivalent check.
+- Make approvers return `True` only after an explicit human decision. Treat timeouts as denials.
+- Keep `require_strong_isolation=True`; leave isolation `disabled` or use OCI with a digest-pinned image.
+- Prefer a dedicated worker container or microVM over a shared container daemon for hostile workloads.
+- Never mount cloud credentials, SSH keys, or unrelated secrets into a tool-enabled host.
 
 ## Known limitations
 
-The local subprocess policy is for trusted development, not a hardened kernel boundary.
-The OCI backend depends on the host runtime, kernel, image, and daemon configuration; it is
-not equivalent to a microVM and deliberately provides no process network access. HTTP domain
-validation alone cannot eliminate every rebinding or proxy ambiguity. The in-process rate
-limiter does not coordinate across replicas. The bundled JSON persistence is intended for a
-single container and should be replaced with transactional storage before horizontal scaling.
+The `local` subprocess profile is for trusted development, not a hardened kernel boundary.
+The OCI backend depends on the host runtime, kernel, image, and daemon configuration, and is not
+equivalent to a microVM. Trigger patterns are Python regular expressions applied to at most 4096
+characters per parameter; authors should avoid catastrophic-backtracking patterns. The action
+budget is per enforcer instance and does not coordinate across processes.

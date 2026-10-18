@@ -1,224 +1,126 @@
-# `.agi` agent blueprint format
+# `.agi` agent boundary policy
 
 [![CI](https://github.com/salus-ryan/agi-format/actions/workflows/ci.yml/badge.svg)](https://github.com/salus-ryan/agi-format/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-`.agi` is a versioned, inspectable archive format for describing an AI agent's
-capabilities, interfaces, safety policy, runtime requirements, and optional model
-artifacts. This repository contains the **v0.1.0 format**, a conforming skeleton,
-CLI tooling, and an **alpha reference runtime** backed by Qwen3-8B on Modal.
+`.agi` is a small, signed, portable file that says **what an agent is allowed to touch**:
+which tools it may call, which need a human, which network destinations and processes are
+permitted, and how many actions it may take. A host enforces that policy *before* every
+effect, using deterministic checks only: no LLM judges and no keyword guesses.
 
-> This project is an experimental agent format and runtime. It is not evidence of
-> artificial general intelligence, and the reference subprocess policy is not a
-> substitute for a container or microVM security boundary.
+The format deliberately says nothing about *how* an agent thinks. Models, prompts, memory,
+planning, and learning are up to the agent. The policy defines the boundary it runs inside.
 
-**Deployment liveness:** <https://salus--agi-agent-agent.us-east.modal.run/health>
+> Format 0.2.0 replaces the 0.1.0 "seven capability modules" blueprint and its reference
+> agent runtime. That code is preserved at the [`v0.4.0`](https://github.com/salus-ryan/agi-format/tree/v0.4.0) tag.
 
-## Format overview
+## A package
 
-A `.agi` file is a deterministic `tar.gz` archive containing seven required
-capability modules:
+```text
+my-agent/
+├── manifest.json     # identity and format version
+├── policy.json       # the boundary (tools, budget, sandbox, escalation)
+├── signature.json    # optional Ed25519 signature over every other file
+└── ...               # any other files (prompts, weights refs); opaque, but covered by the digest
+```
 
-| Capability | Contract |
-|---|---|
-| Perception | Convert supported inputs into typed percepts |
-| Reasoning | Inference, planning, world modeling, and verification |
-| Memory | Episodic, semantic, working, and procedural stores |
-| Language | Understanding, generation, formal languages, and user modeling |
-| Action | Tool registry, execution policy, and feedback |
-| Learning | Replay, curriculum, consolidation, and optional adaptation |
-| Goals | Goal loop, decomposition, alignment, and escalation |
+```json
+{
+  "tools": [
+    {"name": "file_read", "scope": "fs:read"},
+    {"name": "file_write", "scope": "fs:write", "requires_approval": true}
+  ],
+  "budget": {"max_actions_per_session": 100},
+  "sandbox": {
+    "network": {"allowed_domains": [], "allow_http": false, "allow_post": false},
+    "execution": {"shell_enabled": false, "python_enabled": false, "allowed_commands": []},
+    "isolation": {"type": "disabled", "fallback": "deny"},
+    "resource_limits": {"max_cpu_seconds_per_action": 30, "max_memory_mb": 512}
+  },
+  "escalation": {
+    "triggers": [{
+      "id": "credential_paths",
+      "description": "Reading or writing files that look like credentials needs a human.",
+      "severity": "high",
+      "tools": ["file_read", "file_write"],
+      "params": {"path": "(?i)(\\.env|\\.pem|id_rsa|credentials|secret)"}
+    }]
+  }
+}
+```
 
-The format and runtime are deliberately separate. A package declares behavior and
-constraints; a conforming host decides how interfaces are implemented. The Python
-reference runtime currently consumes package policy for tools, sandbox limits,
-planner bounds, replay capacity, alignment, and escalation. It does not provide a
-general third-party plugin loader yet.
+Every call gets one verdict: **allow**, **deny** (the tool isn't declared, or the params are malformed), or
+**escalate** (the tool requires approval, or a trigger's tool and parameter patterns match). If an
+escalation has no approver, or the approver doesn't explicitly say yes, it is denied.
 
 ## Install
 
-Python 3.12 or newer is required.
+Python 3.12 or newer.
 
 ```bash
 python -m venv .venv
 . .venv/bin/activate
-pip install -e '.[dev,api]'
+pip install -e '.[dev]'
 ```
-
-Optional groups are `verification`, `perception`, and `learning`. GPU learning
-dependencies are intentionally not part of the default installation.
 
 ## CLI
 
 ```bash
-# Scaffold an independently authored, deny-by-default package
-agi init my-agent --author "Example Organization"
+agi init my-agent --author "Example Organization"    # deny-by-default starter
+agi validate my-agent/                                 # schema + policy semantics
+agi check my-agent/ file_read --params '{"path": ".env"}'   # dry-run one decision
+agi inspect my-agent/                                  # human-readable boundary
 
-# Full schema and interface-conformance validation
-agi validate my-agent/
-
-# Emit portable conformance evidence
-agi validate my-agent/ --json --report conformance.json
-
-# Inspect architecture and safety policy
-agi inspect my-agent/
-
-# Produce a deterministic archive
-agi pack my-agent/ -o my-agent.agi
-
-# Safely unpack it (links, devices, traversal, and archive bombs are rejected)
+agi keygen --private-key signing.pem --public-key signing.pub
+agi sign my-agent/ --key signing.pem
+agi pack my-agent/ -o my-agent.agi                     # deterministic archive
+agi validate my-agent.agi --trusted-key signing.pub --json --report conformance.json
 agi unpack my-agent.agi -o unpacked/
 ```
 
-The canonical schemas and interface registry are in [`schemas/`](schemas/):
+`agi check` exits `0` for allow and `2` for deny or escalate. Anything that gates on it must pass
+`--trusted-key`; otherwise whoever wrote the policy decides the answer.
 
-- `manifest-v0.1.0.json`
-- `module-v0.1.0.json`
-- `component-v0.1.0.json`
-- `goal-loop-v0.1.0.json`
-- `interfaces-v0.1.0.json`
-- `conformance-report-v0.1.0.json`
+## Enforcing a policy in a host
 
-The loader supports format version `0.1.0` exactly and fails closed on unknown
-versions, interfaces, unsafe references, missing policies, or malformed modules.
-Published schema identifiers are pinned to the immutable software release containing
-them rather than the mutable `main` branch.
+```python
+from runtime.loader import load_agi
+from runtime.policy import PolicyEnforcer
+from runtime.signing import load_public_key
 
-See [`docs/AUTHORING.md`](docs/AUTHORING.md) for the external-author workflow and
-[`action.yml`](action.yml) for reusable GitHub Actions validation.
+package = load_agi("my-agent.agi", trusted_keys=[load_public_key("signing.pub")])
+executor = package.policy.build_executor("/srv/agent/workspace")   # reference built-in tools
 
-## Reference runtime
+def approve(decision, params) -> bool:
+    return ask_a_human(decision.to_dict(), params)   # must return exactly True to allow
 
-The reference pipeline is:
-
-```text
-perceive -> ground -> remember -> plan -> verify -> align -> act -> learn
+enforcer = PolicyEnforcer(package.policy, executor.execute, approve)
+result = enforcer.execute("file_write", {"path": "notes.txt", "content": "hi"})
 ```
 
-It includes Qwen3-8B inference through vLLM, session-scoped memory, candidate plan
-search, a causal/learned world model, a semantic knowledge graph, formal checks,
-and prioritized replay.
+`PolicyEnforcer` works with any tool callable, so hosts can put their own tools (MCP servers,
+APIs) behind the same policy. Each tool's `scope` is meant to map onto the host's authority
+model, for example a capability grant.
 
-Package configuration is used to bound planner candidates, replay capacity, enabled
-tools, subprocess resources, filesystem access, network destinations, alignment,
-and escalation. The default skeleton disables shell, Python, and outbound network
-access. File operations are confined to each session workspace.
+## Reference tool sandbox
 
-### Run the API locally
+The bundled executor implements `file_read`, `file_write`, `shell`, `python_eval`, and `web_request`:
 
-Start an OpenAI-compatible model server, then:
+- files are confined to the session workspace through resolved paths;
+- commands run as argv only (never `shell=True`), against an allowlist that rejects shell
+  operators, file-list/output options, and option values that point outside the workspace;
+- `oci` isolation runs processes in Docker/Podman with a digest-pinned image, no network, a
+  read-only root, dropped capabilities, and resource limits (see [`docs/OCI_ISOLATION.md`](docs/OCI_ISOLATION.md));
+- HTTP is deny-by-default with domain allowlists, private-address blocking, no redirects, and
+  connections pinned to the validated address to prevent DNS rebinding.
 
-```bash
-export AGI_API_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-export AGI_PACKAGE_PATH="$PWD/skeleton"
-export MEMORY_PATH="$PWD/.agent-memory"
-export VLLM_BASE_URL="http://127.0.0.1:8000"
-uvicorn runtime.api_server:app --host 127.0.0.1 --port 8080
-```
+The `local` subprocess profile is for trusted development only. See [`SECURITY.md`](SECURITY.md).
 
-All agent and state endpoints require a bearer token. `/health` and `/ready` are
-public operational probes.
+## Specification
 
-```bash
-curl http://127.0.0.1:8080/chat \
-  -H "Authorization: Bearer $AGI_API_KEY" \
-  -H "X-Session-ID: demo" \
-  -H "Content-Type: application/json" \
-  -d '{"message":"What can you do?","max_tokens":256}'
-```
-
-Session IDs isolate conversation history, memories, goals, workspaces, and learning
-state. Requests in one session are serialized. Deployments should use one container
-per persistent store or replace the reference JSON stores with transactional storage.
-
-### API endpoints
-
-| Endpoint | Auth | Purpose |
-|---|---:|---|
-| `GET /health` | No | Process liveness |
-| `GET /ready` | No | Package and model readiness |
-| `POST /chat` | Yes | Run one agent step |
-| `GET /status` | Yes | Session runtime status |
-| `GET /memories` | Yes | Session episodic memories |
-| `GET /action_log` | Yes | Session tool audit trail |
-| `GET /world_model` | Yes | Session world-model summary |
-| `GET /knowledge` | Yes | Session knowledge summary |
-| `GET /dynamics` | Yes | Learned transition summary |
-| `GET /learning` | Yes | Replay and adaptation status |
-| `POST /train` | Yes | Trigger adaptation for the reserved `operator` session when explicitly enabled |
-
-Request bodies and session IDs are bounded and validated. The API uses deny-by-default
-CORS, bearer authentication, per-credential rate limiting, bounded session caches, and
-redacted error responses.
-
-## Action security
-
-The reference tool runner provides defense in depth:
-
-- process execution disabled by the starter package;
-- production mode rejects shell or Python tools unless OCI isolation is configured;
-- OCI images must be pinned by SHA-256 digest and already present locally;
-- OCI runs use no network, a read-only root, dropped capabilities, no-new-privileges,
-  PID/memory/CPU limits, a bounded temporary filesystem, and only the session workspace mount;
-- command allowlists, shell-operator rejection, and no `shell=True`;
-- bounded streaming capture prevents stdout/stderr memory exhaustion;
-- filesystem confinement using resolved paths;
-- deny-by-default HTTP with domain allowlists and private-address blocking;
-- no redirects, arbitrary ports, or HTTP POST requests by default.
-
-The local subprocess backend exists for trusted development only. OCI isolation is materially
-stronger but is not a microVM boundary and inherits the security of the configured Docker or
-Podman daemon. For hostile multi-tenant workloads, use a dedicated worker container, microVM,
-or equivalent boundary with an egress proxy. See [`docs/OCI_ISOLATION.md`](docs/OCI_ISOLATION.md)
-and [`SECURITY.md`](SECURITY.md).
-
-## Learning safety
-
-Retrieval learning and replay curation are active. Parametric LoRA updates are
-**disabled by default** and require `AGI_ENABLE_ONLINE_TRAINING=true`.
-
-When enabled, the trainer:
-
-1. selects high-reward, deduplicated, secret-filtered examples;
-2. creates a deterministic held-out split;
-3. refuses to train without at least 6 GB of free GPU memory;
-4. trains into a staging directory;
-5. rejects validation-loss regressions;
-6. versions the previous adapter;
-7. promotes only after vLLM accepts the candidate; and
-8. rolls back and writes an audit record on failure.
-
-Operators should still review training data and evaluation evidence before enabling
-weight updates in a sensitive deployment.
-
-## Development
-
-```bash
-pytest -q
-ruff check .
-python -m build
-python -m twine check dist/*
-python scripts/smoke_deployment.py --url http://127.0.0.1:8080 --api-key "$AGI_API_KEY"
-```
-
-CI runs conformance tests, security regressions, API tests, a clean package build,
-and installation from the built wheel. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
-
-## Project structure
-
-```text
-schemas/             Published JSON Schemas, report schema, and interface registry
-skeleton/            Conforming v0.1.0 starter blueprint bundled by `agi init`
-docs/                 External authoring and conformance guidance
-runtime/              Python loader, conformance reporter, and reference runtime
-scripts/              Deployment smoke checks
-tests/                Unit, integration, security, API, and conformance tests
-action.yml            Reusable package-validation GitHub Action
-agi_cli.py             init / validate / inspect / pack / unpack / run
-modal_app.py          Authenticated Modal deployment
-SPEC.md               Normative format specification
-```
+[`SPEC.md`](SPEC.md) is normative. Schemas live in [`schemas/`](schemas/), and authoring and CI
+usage are in [`docs/AUTHORING.md`](docs/AUTHORING.md) and [`action.yml`](action.yml).
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+MIT

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI for scaffolding, packing, validating, inspecting, and running `.agi` files."""
+"""CLI for scaffolding, signing, packing, validating, and inspecting `.agi` policies."""
 
 import argparse
 import gzip
@@ -9,6 +9,7 @@ import re
 import shutil
 import sys
 import tarfile
+import tempfile
 from pathlib import Path
 
 import structlog
@@ -16,6 +17,13 @@ import structlog
 from runtime import __version__
 from runtime.conformance import build_conformance_report
 from runtime.loader import AGILoadError, load_agi, safe_extract_archive
+from runtime.signing import (
+    SignatureError,
+    generate_keypair,
+    load_private_key,
+    load_public_key,
+    sign_package,
+)
 
 structlog.configure(
     processors=[
@@ -147,6 +155,16 @@ def cmd_unpack(args: argparse.Namespace) -> None:
     print(f"Extracted to {output}")
 
 
+def _trusted_keys(paths: list[str] | None):
+    if not paths:
+        return None
+    try:
+        return [load_public_key(path) for path in paths]
+    except SignatureError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+
 def cmd_validate(args: argparse.Namespace) -> None:
     """Validate a .agi directory or archive and optionally emit JSON evidence."""
     source_path = Path(args.source)
@@ -155,7 +173,7 @@ def cmd_validate(args: argparse.Namespace) -> None:
         if source_path.is_dir() and report_path.resolve().is_relative_to(source_path.resolve()):
             print("Error: conformance report must be written outside the package directory")
             sys.exit(1)
-    report = build_conformance_report(source_path)
+    report = build_conformance_report(source_path, trusted_keys=_trusted_keys(args.trusted_key))
     if args.report:
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -163,113 +181,125 @@ def cmd_validate(args: argparse.Namespace) -> None:
         print(json.dumps(report, indent=2, sort_keys=True))
     elif report["conformant"]:
         package = report["package"]
-        print(
-            f"VALID: {package['name']} v{package['version']} "
-            f"(format v{report['format_version']})"
-        )
-        print("All modules and components validated successfully.")
+        signature = report["signature"]
+        signed = f", signed by {signature['public_key_sha256'][:16]}" if signature else ", unsigned"
+        print(f"Conformant: {package['name']} v{package['version']}{signed}")
         print(f"Content SHA-256: {package['content_sha256']}")
     else:
-        print(f"INVALID: {report['error']['message']}")
+        print(f"Validation failed: {report['error']['message']}")
     if not report["conformant"]:
         sys.exit(1)
 
 
 def cmd_inspect(args: argparse.Namespace) -> None:
-    """Inspect the contents of a .agi file."""
-    source = Path(args.source)
+    """Print the boundary a package declares."""
     try:
-        package = load_agi(source)
-    except AGILoadError as e:
-        print(f"Error: {e}")
+        package = load_agi(args.source)
+    except AGILoadError as exc:
+        print(f"Error: {exc}")
         sys.exit(1)
-
-    print(f"\n{'='*60}")
-    print("  .agi Package Inspector")
-    print(f"{'='*60}")
-    print(f"\n  Agent:   {package.name}")
-    print(f"  Version: {package.version}")
-    print(f"  Format:  v{package.format_version}")
-
-    agent = package.manifest["agent"]
-    if agent.get("description"):
-        print(f"  Desc:    {agent['description']}")
-    if agent.get("author"):
-        print(f"  Author:  {agent['author']}")
-    if agent.get("license"):
-        print(f"  License: {agent['license']}")
-
-    runtime = package.manifest["runtime"]
-    print("\n  Runtime Requirements:")
-    print(f"    Min memory:      {runtime.get('min_memory_gb', '?')} GB")
-    print(f"    GPU required:    {runtime.get('gpu_required', False)}")
-    print(f"    GPU VRAM:        {runtime.get('min_gpu_vram_gb', 'N/A')} GB")
-    print(f"    Sandbox:         {'required' if runtime.get('sandbox_required') else 'optional'}")
-    print(f"    Entrypoint:      {runtime.get('entrypoint')}")
-
-    print("\n  Capabilities:")
-    for module_name in ["perception", "reasoning", "memory", "language", "action", "learning", "goals"]:
-        module = package.load_module(module_name)
-        components = module.get("components", [])
-        deps = module.get("dependencies", [])
-        print(f"    {module_name}:")
-        print(f"      Components: {', '.join(c['name'] for c in components)}")
-        if deps:
-            print(f"      Depends on: {', '.join(deps)}")
-
-    # Safety inspection
-    print("\n  Safety Configuration:")
-    alignment = package.load_json("goals/alignment/alignment.json")
-    constraints = alignment["config"]["constraints"]
-    hard = [c for c in constraints if c["type"] == "hard"]
-    soft = [c for c in constraints if c["type"] == "soft"]
-    print(f"    Alignment constraints: {len(hard)} hard, {len(soft)} soft")
-    for c in hard:
-        print(f"      [HARD] {c['id']}: {c['description']}")
-    for c in soft:
-        print(f"      [soft] {c['id']}: {c['description']}")
-
-    escalation = package.load_json("goals/escalation/escalation.json")
-    triggers = escalation["config"]["escalation_triggers"]
-    print(f"    Escalation triggers: {len(triggers)}")
-    for t in triggers:
-        print(f"      [{t['severity']}] {t['id']}: {t['description']}")
-
-    # Goal loop
-    print("\n  Agent Loop:")
-    goal_loop = package.load_goal_loop()
-    for step in goal_loop.get("steps", []):
-        if "loop" in step and step.get("over"):
-            print(f"    {step['name']} (loop over {step['over']}):")
-            for substep in step.get("steps", []):
-                desc = substep.get("description", "")
-                print(f"      -> {substep['name']}: {desc}")
+    with package:
+        policy = package.policy
+        sandbox = policy.sandbox
+        print(f"{package.name} v{package.version} (.agi format {package.format_version})")
+        if package.signature:
+            print(f"  Signed by key {package.signature.public_key_sha256}")
         else:
-            desc = step.get("description", "")
-            cond = f" [if {step['condition']}]" if step.get("condition") else ""
-            print(f"    -> {step['name']}: {desc}{cond}")
+            print("  Unsigned")
+        print(f"  Content SHA-256: {package.digest.sha256}")
+        print("\n  Tools:")
+        for rule in policy.tools.values():
+            approval = " [approval required]" if rule.requires_approval else ""
+            print(f"    {rule.name} ({rule.scope}){approval}")
+        if not policy.tools:
+            print("    (none)")
+        limit = policy.max_actions_per_session
+        print(f"\n  Action budget per session: {'unlimited' if limit is None else limit}")
+        network = sandbox["network"]
+        domains = ", ".join(network["allowed_domains"]) or "none"
+        print(f"  Network: domains={domains} http={network.get('allow_http', False)}"
+              f" post={network.get('allow_post', False)}")
+        execution = sandbox["execution"]
+        print(f"  Execution: shell={execution['shell_enabled']} python={execution['python_enabled']}"
+              f" commands={execution['allowed_commands']}")
+        isolation = sandbox["isolation"]
+        print(f"  Isolation: {isolation['type']} {isolation.get('image', '')}".rstrip())
+        limits = sandbox["resource_limits"]
+        print(f"  Limits: {limits['max_cpu_seconds_per_action']}s CPU, {limits['max_memory_mb']} MB")
+        print("\n  Escalation triggers:")
+        for trigger in policy.triggers:
+            print(f"    [{trigger.severity}] {trigger.id}: {trigger.description}")
+        if not policy.triggers:
+            print("    (none)")
 
-    print(f"\n{'='*60}\n")
 
-
-def cmd_run(args: argparse.Namespace) -> None:
-    """Load and run a .agi agent interactively."""
-    source = Path(args.source)
+def cmd_check(args: argparse.Namespace) -> None:
+    """Evaluate one proposed tool call against a package policy without executing it."""
     try:
-        package = load_agi(source)
-    except AGILoadError as e:
-        print(f"Error: {e}")
+        params = json.loads(args.params)
+    except json.JSONDecodeError as exc:
+        print(f"Error: --params must be JSON: {exc}")
         sys.exit(1)
+    trusted_keys = _trusted_keys(args.trusted_key)
+    try:
+        with load_agi(args.source, trusted_keys=trusted_keys) as package:
+            decision = package.policy.evaluate(args.tool, params)
+    except AGILoadError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    output = {**decision.to_dict(), "package_trusted": trusted_keys is not None}
+    print(json.dumps(output, indent=2, sort_keys=True))
+    if trusted_keys is None:
+        print("Warning: no --trusted-key given; this policy's author is unverified", file=sys.stderr)
+    sys.exit(0 if decision.verdict.value == "allow" else 2)
 
-    from runtime.kernel import AGIKernel
 
-    kernel = AGIKernel(package)
-    kernel.run_interactive(max_steps=args.max_steps)
+def cmd_keygen(args: argparse.Namespace) -> None:
+    """Create an Ed25519 signing key pair."""
+    try:
+        fingerprint = generate_keypair(args.private_key, args.public_key)
+    except (SignatureError, OSError) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    print(f"Wrote {args.private_key} (keep secret) and {args.public_key}")
+    print(f"Key fingerprint: {fingerprint}")
+
+
+def _ignore_root_signature(root: Path):
+    root = root.resolve()
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        return {"signature.json"} if Path(directory).resolve() == root else set()
+
+    return ignore
+
+
+def cmd_sign(args: argparse.Namespace) -> None:
+    """Sign a validated package directory in place."""
+    source = Path(args.source)
+    if not source.is_dir():
+        print("Error: sign a package directory, then pack it")
+        sys.exit(1)
+    try:
+        key = load_private_key(args.key)
+        # Validate the content being signed; any previous signature is replaced, not trusted.
+        with tempfile.TemporaryDirectory(prefix="agi_sign_") as scratch:
+            unsigned = Path(scratch) / "package"
+            shutil.copytree(source, unsigned, symlinks=True, ignore=_ignore_root_signature(source))
+            with load_agi(unsigned):
+                pass
+        sign_package(source, key)
+        with load_agi(source) as package:
+            fingerprint = package.signature.public_key_sha256
+    except (AGILoadError, SignatureError, OSError) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    print(f"Signed {source} with key {fingerprint}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description=".agi format CLI -- scaffold, validate, pack, inspect, and run agent blueprints",
+        description=".agi CLI -- scaffold, sign, validate, pack, and inspect agent boundary policies",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -299,15 +329,36 @@ def main() -> None:
     p_validate.add_argument("source", help="Directory or .agi file to validate")
     p_validate.add_argument("--json", action="store_true", help="Print a machine-readable report")
     p_validate.add_argument("--report", help="Also write the JSON report to this path")
+    p_validate.add_argument(
+        "--trusted-key",
+        action="append",
+        help="PEM Ed25519 public key; require a valid signature by one of these (repeatable)",
+    )
 
     # inspect
     p_inspect = subparsers.add_parser("inspect", help="Inspect a .agi file's contents")
     p_inspect.add_argument("source", help="Directory or .agi file to inspect")
 
-    # run
-    p_run = subparsers.add_parser("run", help="Run a .agi agent interactively")
-    p_run.add_argument("source", help="Directory or .agi file to run")
-    p_run.add_argument("--max-steps", type=int, default=100, help="Max interaction steps")
+    # check
+    p_check = subparsers.add_parser("check", help="Evaluate a tool call against a policy")
+    p_check.add_argument("source", help="Directory or .agi file")
+    p_check.add_argument("tool", help="Tool name")
+    p_check.add_argument("--params", default="{}", help="Tool parameters as a JSON object")
+    p_check.add_argument(
+        "--trusted-key",
+        action="append",
+        help="PEM Ed25519 public key; require a valid signature by one of these (repeatable)",
+    )
+
+    # keygen
+    p_keygen = subparsers.add_parser("keygen", help="Create an Ed25519 signing key pair")
+    p_keygen.add_argument("--private-key", required=True, help="Private key output path")
+    p_keygen.add_argument("--public-key", required=True, help="Public key output path")
+
+    # sign
+    p_sign = subparsers.add_parser("sign", help="Sign a package directory in place")
+    p_sign.add_argument("source", help="Package directory")
+    p_sign.add_argument("--key", required=True, help="PEM Ed25519 private key")
 
     args = parser.parse_args()
 
@@ -317,7 +368,9 @@ def main() -> None:
         "unpack": cmd_unpack,
         "validate": cmd_validate,
         "inspect": cmd_inspect,
-        "run": cmd_run,
+        "check": cmd_check,
+        "keygen": cmd_keygen,
+        "sign": cmd_sign,
     }
 
     commands[args.command](args)

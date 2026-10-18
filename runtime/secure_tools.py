@@ -36,6 +36,7 @@ class ToolExecutor:
     MAX_FILE_BYTES = 5 * 1024 * 1024
     MAX_COMMAND_CHARS = 2_000
     BLOCKED_SHELL_SYNTAX = re.compile(r"[;&|<>`\n\r]|\$\(|\$\{")
+    BLOCKED_OPTION_PREFIXES = ("--files0-from", "--output")
 
     def __init__(
         self,
@@ -44,6 +45,7 @@ class ToolExecutor:
         allowed_tools: set[str] | None = None,
         allowed_commands: list[str] | tuple[str, ...] | None = None,
         allowed_domains: list[str] | tuple[str, ...] | None = None,
+        allow_http: bool = False,
         shell_enabled: bool = True,
         python_enabled: bool = False,
         network_post_enabled: bool = False,
@@ -81,7 +83,9 @@ class ToolExecutor:
         self.allowed_commands = frozenset(
             self.DEFAULT_COMMANDS if allowed_commands is None else allowed_commands
         )
-        self.network_policy = NetworkPolicy(tuple(domain.lower() for domain in (allowed_domains or ())))
+        self.network_policy = NetworkPolicy(
+            tuple(domain.lower() for domain in (allowed_domains or ())), allow_http=allow_http
+        )
         self.network_post_enabled = network_post_enabled
         self.timeout_seconds = max(1, min(int(timeout_seconds), 60))
         self.max_memory_mb = max(64, min(int(max_memory_mb), 2048))
@@ -95,6 +99,7 @@ class ToolExecutor:
                 workspace=self.workspace,
                 max_memory_mb=self.max_memory_mb,
             )
+        self._transport: httpx.BaseTransport | None = None
         self.execution_count = 0
         self.success_count = 0
 
@@ -127,7 +132,7 @@ class ToolExecutor:
                 result = {"success": True, "result": str(params.get("message", ""))}
             else:
                 result = {"success": False, "error": f"Unknown tool: {tool}"}
-        except (OSError, ValueError, SecurityError, subprocess.SubprocessError) as exc:
+        except (OSError, ValueError, SecurityError, subprocess.SubprocessError, httpx.HTTPError) as exc:
             result = {"success": False, "error": str(exc)}
         except Exception:
             log.exception("tool_execution_failed", tool=tool)
@@ -217,19 +222,25 @@ class ToolExecutor:
         if Path(argv[0]).name != argv[0]:
             return {"success": False, "error": "Command paths are not allowed"}
         for argument in argv[1:]:
-            if ".." in Path(argument).parts:
-                return {"success": False, "error": "Parent path traversal is not allowed"}
-            if argument.startswith("/") and not self._path_allowed(argument):
-                return {"success": False, "error": f"Path is outside workspace: {argument}"}
-            if argv[0] in {"ls", "head", "tail", "wc"} and not argument.startswith("-"):
-                candidate = Path(argument)
-                if not candidate.is_absolute():
-                    candidate = self.workspace / candidate
-                if not self._path_allowed(candidate):
+            if argument.startswith(self.BLOCKED_OPTION_PREFIXES) or argument == "-o":
+                return {"success": False, "error": "File-list and output options are disabled"}
+            for value in self._argument_values(argument):
+                if ".." in Path(value).parts:
+                    return {"success": False, "error": "Parent path traversal is not allowed"}
+                if value.startswith(("/", "~")) and not self._path_allowed(value):
                     return {"success": False, "error": f"Path is outside workspace: {argument}"}
-            if argument.startswith("--output") or argument in {"-o", "--files0-from"}:
-                return {"success": False, "error": "Output redirection options are disabled"}
+            if not argument.startswith("-") and not self._path_allowed(self.workspace / argument):
+                return {"success": False, "error": f"Path is outside workspace: {argument}"}
         return self._run_process(argv)
+
+    @staticmethod
+    def _argument_values(argument: str) -> list[str]:
+        """Return every substring of an argument that a command may treat as a path."""
+        if argument.startswith("--"):
+            return [argument.split("=", 1)[1]] if "=" in argument else []
+        if argument.startswith("-") and len(argument) > 2:
+            return [argument[2:]]
+        return [argument]
 
     def _resolve_workspace_path(self, path: str) -> Path:
         candidate = Path(path)
@@ -255,17 +266,32 @@ class ToolExecutor:
         target = self._resolve_workspace_path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(encoded)
-        return {"success": True, "result": f"Wrote {len(encoded)} bytes to {target}"}
+        relative = target.relative_to(self.workspace).as_posix()
+        return {"success": True, "result": f"Wrote {len(encoded)} bytes to {relative}"}
 
     def _exec_web_request(self, url: str, method: str = "GET", body: Any = None) -> dict[str, Any]:
-        self.network_policy.validate_url(url)
         method = method.upper()
         if method not in {"GET", "HEAD"} and not self.network_post_enabled:
             return {"success": False, "error": "Only GET and HEAD are enabled"}
         if method not in {"GET", "HEAD", "POST"}:
             return {"success": False, "error": f"Unsupported method: {method}"}
-        with httpx.Client(timeout=self.timeout_seconds, follow_redirects=False) as client:
-            response = client.request(method, url, content=body)
+        target = self.network_policy.validate_url(url)
+        original = httpx.URL(url)
+        pinned = original.copy_with(host=target.address)
+        host_header = original.host if original.port is None else f"{original.host}:{original.port}"
+        with httpx.Client(
+            timeout=self.timeout_seconds,
+            follow_redirects=False,
+            trust_env=False,
+            transport=self._transport,
+        ) as client:
+            response = client.request(
+                method,
+                pinned,
+                content=body,
+                headers={"Host": host_header},
+                extensions={"sni_hostname": target.hostname},
+            )
         if response.is_redirect:
             return {"success": False, "error": "Redirects are disabled"}
         return {

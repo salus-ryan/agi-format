@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/salus-ryan/agi-format/v0.3.0/schemas/conformance-report-v0.1.0.json",
-  "title": ".agi conformance report v0.1.0",
+  "$id": "https://raw.githubusercontent.com/salus-ryan/agi-format/v0.5.0/schemas/conformance-report-v0.2.0.json",
+  "title": ".agi conformance report v0.2.0",
   "type": "object",
-  "required": ["$schema", "report_version", "implementation", "source_kind", "conformant", "format_version", "package", "checks", "error"],
+  "required": ["$schema", "report_version", "implementation", "source_kind", "conformant", "format_version", "package", "signature", "checks", "error"],
   "additionalProperties": false,
   "properties": {
-    "$schema": {"const": "https://raw.githubusercontent.com/salus-ryan/agi-format/v0.3.0/schemas/conformance-report-v0.1.0.json"},
-    "report_version": {"const": "0.1.0"},
+    "$schema": {"const": "https://raw.githubusercontent.com/salus-ryan/agi-format/v0.5.0/schemas/conformance-report-v0.2.0.json"},
+    "report_version": {"const": "0.2.0"},
     "implementation": {
       "type": "object",
       "required": ["name", "version"],
@@ -37,6 +37,21 @@
         }
       ]
     },
+    "signature": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["algorithm", "public_key_sha256", "trusted"],
+          "additionalProperties": false,
+          "properties": {
+            "algorithm": {"const": "ed25519"},
+            "public_key_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "trusted": {"type": ["boolean", "null"]}
+          }
+        }
+      ]
+    },
     "checks": {
       "type": "array",
       "uniqueItems": true,
@@ -45,8 +60,8 @@
         "required": ["id", "status"],
         "additionalProperties": false,
         "properties": {
-          "id": {"enum": ["package-structure", "json-schema", "interface-registry", "safety-profile"]},
-          "status": {"const": "pass"}
+          "id": {"enum": ["package-structure", "json-schema", "policy-semantics", "signature"]},
+          "status": {"enum": ["pass", "absent"]}
         }
       }
     },
@@ -70,7 +85,7 @@
       "if": {"properties": {"conformant": {"const": true}}},
       "then": {
         "properties": {
-          "format_version": {"const": "0.1.0"},
+          "format_version": {"const": "0.2.0"},
           "package": {"type": "object"},
           "checks": {"minItems": 4, "maxItems": 4},
           "error": {"type": "null"}
@@ -80,6 +95,7 @@
         "properties": {
           "format_version": {"type": "null"},
           "package": {"type": "null"},
+          "signature": {"type": "null"},
           "checks": {"maxItems": 0},
           "error": {"type": "object"}
         }

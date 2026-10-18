@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/salus-ryan/agi-format/v0.5.0/schemas/manifest-v0.2.0.json",
+  "title": ".agi manifest v0.2.0",
+  "type": "object",
+  "required": ["format_version", "agent"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {"type": "string", "format": "uri"},
+    "format_version": {"const": "0.2.0"},
+    "agent": {
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
+        "version": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:[-+][0-9A-Za-z.-]+)?$"},
+        "description": {"type": "string", "maxLength": 4096},
+        "author": {"type": "string", "maxLength": 256},
+        "license": {"type": "string", "maxLength": 128}
+      }
+    }
+  }
+}

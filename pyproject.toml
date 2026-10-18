@@ -4,47 +4,30 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agi-format"
-version = "0.4.0"
-description = "A versioned file format and reference runtime for self-describing agent blueprints"
+version = "0.5.0"
+description = "A signed, portable boundary-policy format for AI agents, with a reference enforcer"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{name = "Salus"}]
-keywords = ["agents", "ai", "file-format", "runtime"]
+keywords = ["agents", "ai", "policy", "sandbox", "file-format"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+    "cryptography>=44,<51",
     "httpx>=0.27,<1",
     "jsonschema[format]>=4.23,<5",
-    "numpy>=1.26,<3",
     "structlog>=24.1,<26",
 ]
 
 [project.optional-dependencies]
-api = [
-    "fastapi>=0.115,<1",
-    "pydantic>=2.10,<3",
-    "uvicorn>=0.34,<1",
-]
-verification = ["z3-solver>=4.13,<5; platform_system != 'Android'"]
-learning = [
-    "bitsandbytes>=0.45,<1; platform_system == 'Linux' and platform_machine == 'x86_64'",
-    "peft>=0.15,<1",
-    "torch>=2.5,<3",
-    "transformers>=4.51,<5",
-]
-perception = [
-    "pillow>=10,<12",
-    "transformers>=4.51,<5",
-]
 dev = [
     "build>=1.2,<2",
     "pytest>=8.3,<10",
-    "pytest-asyncio>=0.25,<2",
     "ruff>=0.9,<1; platform_system != 'Android'",
     "twine>=6,<7",
 ]
@@ -66,39 +49,7 @@ include = ["runtime*"]
 
 [tool.setuptools.data-files]
 "share/agi-format/schemas" = ["schemas/*.json"]
-"share/agi-format/templates/minimal-agent/action/feedback" = ["skeleton/action/feedback/feedback.json"]
-"share/agi-format/templates/minimal-agent/action" = ["skeleton/action/module.json"]
-"share/agi-format/templates/minimal-agent/action/sandbox" = ["skeleton/action/sandbox/sandbox.json"]
-"share/agi-format/templates/minimal-agent/action/tools" = ["skeleton/action/tools/tools.json"]
-"share/agi-format/templates/minimal-agent/goals/alignment" = ["skeleton/goals/alignment/alignment.json"]
-"share/agi-format/templates/minimal-agent/goals/decomposition" = ["skeleton/goals/decomposition/decomposition.json"]
-"share/agi-format/templates/minimal-agent/goals/escalation" = ["skeleton/goals/escalation/escalation.json"]
-"share/agi-format/templates/minimal-agent/goals" = ["skeleton/goals/goal_loop.json", "skeleton/goals/module.json"]
-"share/agi-format/templates/minimal-agent/language/formal_languages" = ["skeleton/language/formal_languages/formal.json"]
-"share/agi-format/templates/minimal-agent/language/generation" = ["skeleton/language/generation/nlg.json"]
-"share/agi-format/templates/minimal-agent/language" = ["skeleton/language/module.json"]
-"share/agi-format/templates/minimal-agent/language/theory_of_mind" = ["skeleton/language/theory_of_mind/tom.json"]
-"share/agi-format/templates/minimal-agent/language/understanding" = ["skeleton/language/understanding/nlu.json"]
-"share/agi-format/templates/minimal-agent/learning/consolidation" = ["skeleton/learning/consolidation/consolidation.json"]
-"share/agi-format/templates/minimal-agent/learning/curriculum" = ["skeleton/learning/curriculum/curriculum.json"]
-"share/agi-format/templates/minimal-agent/learning" = ["skeleton/learning/module.json"]
-"share/agi-format/templates/minimal-agent/learning/online" = ["skeleton/learning/online/online.json"]
-"share/agi-format/templates/minimal-agent/learning/replay" = ["skeleton/learning/replay/replay.json"]
-"share/agi-format/templates/minimal-agent" = ["skeleton/manifest.json"]
-"share/agi-format/templates/minimal-agent/memory/episodic" = ["skeleton/memory/episodic/episodic.json"]
-"share/agi-format/templates/minimal-agent/memory" = ["skeleton/memory/module.json"]
-"share/agi-format/templates/minimal-agent/memory/procedural" = ["skeleton/memory/procedural/procedural.json"]
-"share/agi-format/templates/minimal-agent/memory/semantic" = ["skeleton/memory/semantic/semantic.json"]
-"share/agi-format/templates/minimal-agent/memory/working" = ["skeleton/memory/working/working.json"]
-"share/agi-format/templates/minimal-agent/perception/adapters" = ["skeleton/perception/adapters/audio.json", "skeleton/perception/adapters/structured.json", "skeleton/perception/adapters/text.json", "skeleton/perception/adapters/vision.json"]
-"share/agi-format/templates/minimal-agent/perception/grounding" = ["skeleton/perception/grounding/grounding.json"]
-"share/agi-format/templates/minimal-agent/perception" = ["skeleton/perception/module.json"]
-"share/agi-format/templates/minimal-agent/reasoning/causal" = ["skeleton/reasoning/causal/world_model.json"]
-"share/agi-format/templates/minimal-agent/reasoning/formal" = ["skeleton/reasoning/formal/verifier.json"]
-"share/agi-format/templates/minimal-agent/reasoning/inference" = ["skeleton/reasoning/inference/engine.json"]
-"share/agi-format/templates/minimal-agent/reasoning" = ["skeleton/reasoning/module.json"]
-"share/agi-format/templates/minimal-agent/reasoning/planning" = ["skeleton/reasoning/planning/planner.json"]
-"share/agi-format/templates/minimal-agent/weights" = ["skeleton/weights/README.md"]
+"share/agi-format/templates/minimal-agent" = ["skeleton/manifest.json", "skeleton/policy.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
