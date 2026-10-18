@@ -105,3 +105,34 @@ def test_cli_sign_pack_and_validate_archive_with_trusted_key(package, keys, tmp_
     assert report["signature"]["trusted"] is True
     assert {"id": "signature", "status": "pass"} in report["checks"]
     assert build_conformance_report(archive)["signature"]["trusted"] is None
+
+
+def test_cli_resigns_after_edit_and_check_honours_trust(package, keys, tmp_path):
+    private, public = keys
+
+    def cli(*args):
+        return subprocess.run(
+            [sys.executable, str(ROOT / "agi_cli.py"), *args],
+            capture_output=True, text=True, cwd=ROOT, check=False,
+        )
+
+    assert cli("sign", str(package), "--key", str(private)).returncode == 0
+    policy_path = package / "policy.json"
+    policy = json.loads(policy_path.read_text())
+    policy["budget"]["max_actions_per_session"] = 5
+    policy_path.write_text(json.dumps(policy))
+    resigned = cli("sign", str(package), "--key", str(private))
+    assert resigned.returncode == 0, resigned.stdout
+    assert load_agi(package, trusted_keys=[load_public_key(public)]).policy.max_actions_per_session == 5
+
+    trusted = cli("check", str(package), "file_read", "--params", '{"path": "a"}',
+                  "--trusted-key", str(public))
+    assert trusted.returncode == 0
+    assert json.loads(trusted.stdout)["package_trusted"] is True
+    stranger_private = tmp_path / "stranger.pem"
+    generate_keypair(stranger_private, tmp_path / "stranger.pub")
+    sign_package(package, load_private_key(stranger_private))
+    rejected = cli("check", str(package), "file_read", "--params", '{"path": "a"}',
+                   "--trusted-key", str(public))
+    assert rejected.returncode == 1
+    assert "untrusted key" in rejected.stdout

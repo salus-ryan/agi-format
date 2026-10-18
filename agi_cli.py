@@ -9,6 +9,7 @@ import re
 import shutil
 import sys
 import tarfile
+import tempfile
 from pathlib import Path
 
 import structlog
@@ -239,13 +240,17 @@ def cmd_check(args: argparse.Namespace) -> None:
     except json.JSONDecodeError as exc:
         print(f"Error: --params must be JSON: {exc}")
         sys.exit(1)
+    trusted_keys = _trusted_keys(args.trusted_key)
     try:
-        with load_agi(args.source) as package:
+        with load_agi(args.source, trusted_keys=trusted_keys) as package:
             decision = package.policy.evaluate(args.tool, params)
     except AGILoadError as exc:
         print(f"Error: {exc}")
         sys.exit(1)
-    print(json.dumps(decision.to_dict(), indent=2, sort_keys=True))
+    output = {**decision.to_dict(), "package_trusted": trusted_keys is not None}
+    print(json.dumps(output, indent=2, sort_keys=True))
+    if trusted_keys is None:
+        print("Warning: no --trusted-key given; this policy's author is unverified", file=sys.stderr)
     sys.exit(0 if decision.verdict.value == "allow" else 2)
 
 
@@ -260,6 +265,15 @@ def cmd_keygen(args: argparse.Namespace) -> None:
     print(f"Key fingerprint: {fingerprint}")
 
 
+def _ignore_root_signature(root: Path):
+    root = root.resolve()
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        return {"signature.json"} if Path(directory).resolve() == root else set()
+
+    return ignore
+
+
 def cmd_sign(args: argparse.Namespace) -> None:
     """Sign a validated package directory in place."""
     source = Path(args.source)
@@ -268,8 +282,12 @@ def cmd_sign(args: argparse.Namespace) -> None:
         sys.exit(1)
     try:
         key = load_private_key(args.key)
-        with load_agi(source):
-            pass
+        # Validate the content being signed; any previous signature is replaced, not trusted.
+        with tempfile.TemporaryDirectory(prefix="agi_sign_") as scratch:
+            unsigned = Path(scratch) / "package"
+            shutil.copytree(source, unsigned, symlinks=True, ignore=_ignore_root_signature(source))
+            with load_agi(unsigned):
+                pass
         sign_package(source, key)
         with load_agi(source) as package:
             fingerprint = package.signature.public_key_sha256
@@ -326,6 +344,11 @@ def main() -> None:
     p_check.add_argument("source", help="Directory or .agi file")
     p_check.add_argument("tool", help="Tool name")
     p_check.add_argument("--params", default="{}", help="Tool parameters as a JSON object")
+    p_check.add_argument(
+        "--trusted-key",
+        action="append",
+        help="PEM Ed25519 public key; require a valid signature by one of these (repeatable)",
+    )
 
     # keygen
     p_keygen = subparsers.add_parser("keygen", help="Create an Ed25519 signing key pair")

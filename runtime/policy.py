@@ -6,6 +6,7 @@ output, keyword heuristics, or network lookups participate in allow/deny decisio
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import threading
@@ -247,11 +248,14 @@ class PolicyEnforcer:
         decision = self.policy.evaluate(tool, params)
         if decision.verdict is Verdict.DENY:
             return self._refuse(decision, decision.reason)
+        # Freeze the evaluated parameters so neither the caller nor the approver can
+        # change what runs after the decision was made.
+        frozen = copy.deepcopy(dict(params))
         if decision.verdict is Verdict.ESCALATE:
             if self._approver is None:
                 return self._refuse(decision, "approval required but no approver is configured")
             try:
-                approved = self._approver(decision, params) is True
+                approved = self._approver(decision, copy.deepcopy(frozen)) is True
             except Exception:
                 log.exception("approver_failed", tool=tool)
                 approved = False
@@ -262,7 +266,13 @@ class PolicyEnforcer:
             if limit is not None and self.actions_taken >= limit:
                 return self._refuse(decision, "session action budget is exhausted")
             self.actions_taken += 1
-        result = self._execute(tool, dict(params))
+        try:
+            result = self._execute(tool, frozen)
+        except Exception as exc:
+            log.exception("tool_raised", tool=tool)
+            error = f"Tool raised {type(exc).__name__}"
+            self._record(decision, executed=True, success=False, error=error)
+            return {"success": False, "error": error, "decision": decision.to_dict()}
         result["decision"] = decision.to_dict()
         self._record(decision, executed=True, success=bool(result.get("success")))
         return result

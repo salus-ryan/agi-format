@@ -280,7 +280,10 @@ class ToolExecutor:
         pinned = original.copy_with(host=target.address)
         host_header = original.host if original.port is None else f"{original.host}:{original.port}"
         with httpx.Client(
-            timeout=self.timeout_seconds, follow_redirects=False, transport=self._transport
+            timeout=self.timeout_seconds,
+            follow_redirects=False,
+            trust_env=False,
+            transport=self._transport,
         ) as client:
             response = client.request(
                 method,

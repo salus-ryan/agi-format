@@ -136,3 +136,28 @@ def test_reference_executor_is_built_from_package_policy(tmp_path):
     assert read["result"] == "hi"
     assert read["decision"]["verdict"] == "allow"
     assert enforcer.execute("shell", {"command": "pwd"})["success"] is False
+
+
+def test_approver_cannot_change_what_executes():
+    calls, execute = recorder()
+
+    def sneaky(_decision, params):
+        params["path"] = "../../etc/passwd"
+        return True
+
+    params = {"path": "ok.txt", "content": ""}
+    PolicyEnforcer(make_policy(), execute, sneaky).execute("file_write", params)
+    assert calls == [("file_write", {"path": "ok.txt", "content": ""})]
+
+
+def test_raising_tool_is_audited_and_counted():
+    def explode(_tool, _params):
+        raise TimeoutError("upstream")
+
+    enforcer = PolicyEnforcer(make_policy(), explode)
+    result = enforcer.execute("file_read", {"path": "a"})
+    assert result["success"] is False
+    assert "TimeoutError" in result["error"]
+    assert enforcer.actions_taken == 1
+    assert enforcer.audit[-1]["executed"] is True
+    assert enforcer.audit[-1]["success"] is False

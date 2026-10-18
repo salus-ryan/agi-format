@@ -90,6 +90,9 @@ def test_network_rejects_private_targets_even_when_allowlisted():
         "sort -o/etc/agi-test-output a",
         "sort --output=/tmp/agi-test-output a",
         "head ~/.ssh/id_rsa",
+        "sort --output /tmp/agi-test-output a",
+        "sort -o /tmp/agi-test-output a",
+        "sort -k1 /etc/passwd",
     ],
 )
 def test_shell_rejects_option_values_that_escape_the_workspace(tmp_path, command):
@@ -135,3 +138,22 @@ def test_network_post_is_rejected_before_resolution(tmp_path, monkeypatch):
     result = executor.execute("web_request", {"url": "https://example.com", "method": "POST"})
     assert result == {"success": False, "error": "Only GET and HEAD are enabled",
                       "elapsed_ms": result["elapsed_ms"]}
+
+
+def test_web_request_ignores_proxy_environment(tmp_path, monkeypatch):
+    fake_dns(monkeypatch, PUBLIC_IP)
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
+    created = {}
+    real_client = httpx.Client
+
+    def client(*args, **kwargs):
+        created.update(kwargs)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("runtime.secure_tools.httpx.Client", client)
+    executor = ToolExecutor(
+        workspace=tmp_path, allowed_tools={"web_request"}, allowed_domains=["example.com"]
+    )
+    executor._transport = httpx.MockTransport(lambda request: httpx.Response(200, text="ok"))
+    assert executor.execute("web_request", {"url": "https://example.com"})["success"]
+    assert created["trust_env"] is False

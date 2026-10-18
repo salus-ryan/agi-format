@@ -78,7 +78,8 @@ agi validate my-agent.agi --trusted-key signing.pub --json --report conformance.
 agi unpack my-agent.agi -o unpacked/
 ```
 
-`agi check` exits `0` for allow and `2` for deny or escalate.
+`agi check` exits `0` for allow and `2` for deny or escalate. Anything that gates on it must pass
+`--trusted-key`; otherwise whoever wrote the policy decides the answer.
 
 ## Enforcing a policy in a host
 
