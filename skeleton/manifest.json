@@ -1,48 +1,11 @@
 {
-  "$schema": "https://raw.githubusercontent.com/salus-ryan/agi-format/v0.3.0/schemas/manifest-v0.1.0.json",
-  "format_version": "0.1.0",
+  "$schema": "https://raw.githubusercontent.com/salus-ryan/agi-format/v0.5.0/schemas/manifest-v0.2.0.json",
+  "format_version": "0.2.0",
   "agent": {
     "name": "skeleton-agent",
     "version": "0.1.0",
-    "description": "Reference agent demonstrating the .agi file format and its typed capability interfaces.",
+    "description": "Minimal deny-by-default boundary policy: workspace file access only, no processes, no network.",
     "author": "agi-format",
     "license": "MIT"
-  },
-  "capabilities": {
-    "perception": {
-      "module": "perception/module.json",
-      "required": true
-    },
-    "reasoning": {
-      "module": "reasoning/module.json",
-      "required": true
-    },
-    "memory": {
-      "module": "memory/module.json",
-      "required": true
-    },
-    "language": {
-      "module": "language/module.json",
-      "required": true
-    },
-    "action": {
-      "module": "action/module.json",
-      "required": true
-    },
-    "learning": {
-      "module": "learning/module.json",
-      "required": true
-    },
-    "goals": {
-      "module": "goals/module.json",
-      "required": true
-    }
-  },
-  "runtime": {
-    "min_memory_gb": 8,
-    "gpu_required": false,
-    "min_gpu_vram_gb": null,
-    "sandbox_required": true,
-    "entrypoint": "goals/goal_loop.json"
   }
 }

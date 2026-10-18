@@ -1,10 +1,9 @@
-"""Secure loader and conformance validator for .agi packages."""
+"""Secure loader and validator for `.agi` boundary-policy packages."""
 
 from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import sys
 import tarfile
@@ -13,29 +12,29 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import structlog
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from jsonschema import Draft202012Validator, FormatChecker
+
+from runtime.policy import Policy, PolicyError
+from runtime.signing import (
+    MAX_PACKAGE_BYTES,
+    MAX_PACKAGE_FILES,
+    SIGNATURE_FILE,
+    Digest,
+    SignatureError,
+    SignatureStatus,
+    content_digest,
+    verify_signature,
+)
 
 log = structlog.get_logger()
 
-FORMAT_VERSION = "0.1.0"
+FORMAT_VERSION = "0.2.0"
 SUPPORTED_FORMAT_VERSIONS = {FORMAT_VERSION}
-REQUIRED_MODULES = [
-    "perception",
-    "reasoning",
-    "memory",
-    "language",
-    "action",
-    "learning",
-    "goals",
-]
-REQUIRED_SAFETY_FILES = [
-    "goals/alignment/alignment.json",
-    "action/sandbox/sandbox.json",
-    "goals/escalation/escalation.json",
-]
-MAX_ARCHIVE_MEMBERS = 10_000
-MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
-OCI_IMAGE_BY_DIGEST = re.compile(r"^[A-Za-z0-9][A-Za-z0-9./:_-]*@sha256:[0-9a-f]{64}$")
+MANIFEST_FILE = "manifest.json"
+POLICY_FILE = "policy.json"
+MAX_ARCHIVE_MEMBERS = MAX_PACKAGE_FILES
+MAX_ARCHIVE_BYTES = MAX_PACKAGE_BYTES
 
 
 class AGILoadError(Exception):
@@ -140,17 +139,22 @@ def safe_extract_archive(source: str | Path, destination: str | Path) -> Path:
 
 
 class AGIPackage:
-    """A validated .agi package with path-confined access to its components."""
+    """A validated `.agi` package with path-confined access to its files."""
 
     def __init__(
         self,
         root: Path,
         manifest: dict[str, Any],
+        policy: Policy,
+        digest: Digest,
+        signature: SignatureStatus | None,
         temporary_directory: tempfile.TemporaryDirectory[str] | None = None,
     ):
         self.root = root.resolve()
         self.manifest = manifest
-        self._module_cache: dict[str, dict[str, Any]] = {}
+        self.policy = policy
+        self.digest = digest
+        self.signature = signature
         self._temporary_directory = temporary_directory
 
     @property
@@ -166,50 +170,11 @@ class AGIPackage:
         return self.manifest["format_version"]
 
     def resolve_path(self, relative_path: str) -> Path:
-        relative = _safe_relative_path(relative_path, "package reference")
-        candidate = self.root / Path(*relative.parts)
-        current = candidate
-        while current != self.root:
-            if current.is_symlink():
-                raise AGILoadError(f"Package reference may not use symlinks: {relative_path}")
-            current = current.parent
-        full_path = candidate.resolve()
-        if not _is_within(full_path, self.root):
-            raise AGILoadError(f"Package reference escapes root: {relative_path}")
-        return full_path
+        return _resolve_confined(self.root, relative_path)
 
     def load_json(self, relative_path: str) -> dict[str, Any]:
         """Load an object-valued JSON file confined to the package root."""
-        full_path = self.resolve_path(relative_path)
-        if not full_path.is_file():
-            raise AGILoadError(f"Missing file: {relative_path}")
-        try:
-            value = json.loads(full_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise AGILoadError(f"Invalid JSON in {relative_path}: {exc}") from exc
-        if not isinstance(value, dict):
-            raise AGILoadError(f"Expected a JSON object in {relative_path}")
-        return value
-
-    def load_module(self, module_name: str) -> dict[str, Any]:
-        if module_name in self._module_cache:
-            return self._module_cache[module_name]
-        capability = self.manifest["capabilities"].get(module_name)
-        if not capability:
-            raise AGILoadError(f"Unknown module: {module_name}")
-        module_data = self.load_json(capability["module"])
-        self._module_cache[module_name] = module_data
-        return module_data
-
-    def load_component(self, module_name: str, component_name: str) -> dict[str, Any]:
-        module = self.load_module(module_name)
-        for component in module.get("components", []):
-            if component["name"] == component_name:
-                return self.load_json(f"{module_name}/{component['path']}")
-        raise AGILoadError(f"Component {component_name} not found in module {module_name}")
-
-    def load_goal_loop(self) -> dict[str, Any]:
-        return self.load_json(self.manifest["runtime"]["entrypoint"])
+        return _load_json(self.root, relative_path)
 
     def close(self) -> None:
         if self._temporary_directory is not None:
@@ -223,111 +188,77 @@ class AGIPackage:
         self.close()
 
 
-def _validate_safety(package: AGIPackage) -> None:
-    alignment = package.load_json(REQUIRED_SAFETY_FILES[0])
-    constraints = alignment.get("config", {}).get("constraints")
-    if not isinstance(constraints, list) or not constraints:
-        raise AGILoadError("alignment.json must declare at least one constraint")
-    constraint_ids = [item.get("id") for item in constraints if isinstance(item, dict)]
-    if len(constraint_ids) != len(constraints) or len(set(constraint_ids)) != len(constraint_ids):
-        raise AGILoadError("alignment.json constraint IDs must be present and unique")
-    if not any(item.get("type") == "hard" for item in constraints):
-        raise AGILoadError("alignment.json must contain at least one hard constraint")
-
-    sandbox = package.load_json(REQUIRED_SAFETY_FILES[1])
-    sandbox_config = sandbox.get("config", {})
-    if sandbox_config.get("network", {}).get("policy") != "allowlist":
-        raise AGILoadError("sandbox network policy must be allowlist")
-    if not isinstance(sandbox_config.get("resource_limits"), dict):
-        raise AGILoadError("sandbox.json must declare resource_limits")
-    execution = sandbox_config.get("execution", {})
-    isolation = sandbox_config.get("isolation", {})
-    isolation_type = isolation.get("type")
-    if isolation_type not in {"disabled", "local", "oci"}:
-        raise AGILoadError("sandbox isolation type must be disabled, local, or oci")
-    if isolation.get("fallback") != "deny":
-        raise AGILoadError("sandbox isolation fallback must be deny")
-    process_tools_enabled = bool(
-        execution.get("shell_enabled", False) or execution.get("python_enabled", False)
-    )
-    if isolation_type == "disabled" and process_tools_enabled:
-        raise AGILoadError("disabled process isolation cannot enable shell or Python")
-    if isolation_type == "oci":
-        if isolation.get("runtime") not in {"docker", "podman"}:
-            raise AGILoadError("OCI isolation runtime must be docker or podman")
-        if not OCI_IMAGE_BY_DIGEST.fullmatch(str(isolation.get("image", ""))):
-            raise AGILoadError("OCI isolation image must be pinned by sha256 digest")
-
-    escalation = package.load_json(REQUIRED_SAFETY_FILES[2])
-    triggers = escalation.get("config", {}).get("escalation_triggers")
-    if not isinstance(triggers, list) or not triggers:
-        raise AGILoadError("escalation.json must declare escalation triggers")
-    trigger_ids = [item.get("id") for item in triggers if isinstance(item, dict)]
-    if len(trigger_ids) != len(triggers) or len(set(trigger_ids)) != len(trigger_ids):
-        raise AGILoadError("escalation trigger IDs must be present and unique")
+def _resolve_confined(root: Path, relative_path: str) -> Path:
+    relative = _safe_relative_path(relative_path, "package reference")
+    candidate = root / Path(*relative.parts)
+    current = candidate
+    while current != root:
+        if current.is_symlink():
+            raise AGILoadError(f"Package reference may not use symlinks: {relative_path}")
+        current = current.parent
+    full_path = candidate.resolve()
+    if not _is_within(full_path, root):
+        raise AGILoadError(f"Package reference escapes root: {relative_path}")
+    return full_path
 
 
-def _validate_package(package: AGIPackage) -> None:
-    manifest = package.manifest
-    _validate_schema(manifest, "manifest-v0.1.0.json", "manifest.json")
+def _load_json(root: Path, relative_path: str) -> dict[str, Any]:
+    full_path = _resolve_confined(root, relative_path)
+    if not full_path.is_file():
+        raise AGILoadError(f"Missing file: {relative_path}")
+    try:
+        value = json.loads(full_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AGILoadError(f"Invalid JSON in {relative_path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise AGILoadError(f"Expected a JSON object in {relative_path}")
+    return value
+
+
+def _validate(
+    root: Path, trusted_keys: list[Ed25519PublicKey] | None
+) -> tuple[dict[str, Any], Policy, Digest, SignatureStatus | None]:
+    manifest = _load_json(root, MANIFEST_FILE)
     version = manifest.get("format_version")
     if version not in SUPPORTED_FORMAT_VERSIONS:
         supported = ", ".join(sorted(SUPPORTED_FORMAT_VERSIONS))
         raise AGILoadError(f"Unsupported format_version {version!r}; supported: {supported}")
+    _validate_schema(manifest, "manifest-v0.2.0.json", MANIFEST_FILE)
 
-    registry = _load_schema("interfaces-v0.1.0.json")
-    known_interfaces = set(registry["interfaces"])
+    policy_data = _load_json(root, POLICY_FILE)
+    _validate_schema(policy_data, "policy-v0.2.0.json", POLICY_FILE)
+    try:
+        policy = Policy.from_dict(policy_data)
+    except PolicyError as exc:
+        raise AGILoadError(f"{POLICY_FILE}: {exc}") from exc
 
-    for module_name in REQUIRED_MODULES:
-        capability = manifest["capabilities"][module_name]
-        expected_path = f"{module_name}/module.json"
-        if capability["module"] != expected_path:
-            raise AGILoadError(
-                f"Capability {module_name} must reference {expected_path}, not {capability['module']}"
-            )
-        module = package.load_json(expected_path)
-        _validate_schema(module, "module-v0.1.0.json", expected_path)
-        if module["name"] != module_name:
-            raise AGILoadError(f"{expected_path}: name must be {module_name!r}")
-        unknown_dependencies = set(module["dependencies"]) - set(REQUIRED_MODULES)
-        if unknown_dependencies:
-            raise AGILoadError(
-                f"{expected_path}: unknown dependencies: {sorted(unknown_dependencies)}"
-            )
-        component_names: set[str] = set()
-        for component in module["components"]:
-            if component["name"] in component_names:
-                raise AGILoadError(
-                    f"{expected_path}: duplicate component {component['name']!r}"
-                )
-            component_names.add(component["name"])
-            if component["interface"] not in known_interfaces:
-                raise AGILoadError(
-                    f"{expected_path}: unknown interface {component['interface']!r}"
-                )
-            component_path = f"{module_name}/{component['path']}"
-            component_config = package.load_json(component_path)
-            if component_path != manifest["runtime"]["entrypoint"]:
-                _validate_schema(
-                    component_config, "component-v0.1.0.json", component_path
-                )
-            if component_config["name"] != component["name"]:
-                raise AGILoadError(
-                    f"{component_path}: name does not match module component declaration"
-                )
+    try:
+        digest = content_digest(root)
+    except SignatureError as exc:
+        raise AGILoadError(str(exc)) from exc
 
-    for safety_file in REQUIRED_SAFETY_FILES:
-        if not package.resolve_path(safety_file).is_file():
-            raise AGILoadError(f"Missing required safety file: {safety_file}")
-    _validate_safety(package)
-
-    entrypoint = manifest["runtime"]["entrypoint"]
-    goal_loop = package.load_json(entrypoint)
-    _validate_schema(goal_loop, "goal-loop-v0.1.0.json", entrypoint)
+    signature: SignatureStatus | None = None
+    signature_path = root / SIGNATURE_FILE
+    if signature_path.exists() or signature_path.is_symlink():
+        document = _load_json(root, SIGNATURE_FILE)
+        _validate_schema(document, "signature-v0.2.0.json", SIGNATURE_FILE)
+        try:
+            signature = verify_signature(document, digest, trusted_keys)
+        except SignatureError as exc:
+            raise AGILoadError(str(exc)) from exc
+    elif trusted_keys is not None:
+        raise AGILoadError("Package is unsigned but a trusted signing key is required")
+    return manifest, policy, digest, signature
 
 
-def load_agi(path: str | Path) -> AGIPackage:
-    """Load and fully validate a .agi directory or compressed archive."""
+def load_agi(
+    path: str | Path, *, trusted_keys: list[Ed25519PublicKey] | None = None
+) -> AGIPackage:
+    """Load and fully validate a `.agi` directory or archive.
+
+    When `trusted_keys` is given, the package must carry a valid signature by one of them.
+    A present but invalid signature is always rejected.
+    """
     path = Path(path)
     temporary_directory: tempfile.TemporaryDirectory[str] | None = None
 
@@ -345,35 +276,21 @@ def load_agi(path: str | Path) -> AGIPackage:
     else:
         raise AGILoadError(f"Unsupported or missing package path: {path}")
 
-    manifest_path = root / "manifest.json"
-    if not manifest_path.is_file():
-        if temporary_directory:
-            temporary_directory.cleanup()
-        raise AGILoadError("Missing manifest.json in .agi package")
-
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        if temporary_directory:
-            temporary_directory.cleanup()
-        raise AGILoadError(f"Invalid manifest.json: {exc}") from exc
-    if not isinstance(manifest, dict):
-        if temporary_directory:
-            temporary_directory.cleanup()
-        raise AGILoadError("manifest.json must contain a JSON object")
-
-    package = AGIPackage(root, manifest, temporary_directory)
-    try:
-        _validate_package(package)
+        if not (root / MANIFEST_FILE).is_file():
+            raise AGILoadError("Missing manifest.json in .agi package")
+        manifest, policy, digest, signature = _validate(root, trusted_keys)
     except Exception:
-        package.close()
+        if temporary_directory:
+            temporary_directory.cleanup()
         raise
 
+    package = AGIPackage(root, manifest, policy, digest, signature, temporary_directory)
     log.info(
         "agi_loaded",
         name=package.name,
         version=package.version,
         format_version=package.format_version,
-        modules=REQUIRED_MODULES,
+        signed=signature is not None,
     )
     return package

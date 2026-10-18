@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/salus-ryan/agi-format/v0.5.0/schemas/policy-v0.2.0.json",
+  "title": ".agi boundary policy v0.2.0",
+  "type": "object",
+  "required": ["tools", "sandbox", "escalation"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {"type": "string", "format": "uri"},
+    "tools": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"$ref": "#/$defs/toolName"},
+          "scope": {"type": "string", "maxLength": 256, "pattern": "^[A-Za-z0-9_.-]+:[A-Za-z0-9_.*-]+$"},
+          "requires_approval": {"type": "boolean"},
+          "description": {"type": "string", "maxLength": 1024}
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_actions_per_session": {"type": "integer", "minimum": 0, "maximum": 1000000}
+      }
+    },
+    "sandbox": {
+      "type": "object",
+      "required": ["network", "execution", "isolation", "resource_limits"],
+      "additionalProperties": false,
+      "properties": {
+        "network": {
+          "type": "object",
+          "required": ["allowed_domains"],
+          "additionalProperties": false,
+          "properties": {
+            "allowed_domains": {
+              "type": "array",
+              "uniqueItems": true,
+              "maxItems": 256,
+              "items": {"type": "string", "maxLength": 253, "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"}
+            },
+            "allow_http": {"type": "boolean"},
+            "allow_post": {"type": "boolean"}
+          }
+        },
+        "execution": {
+          "type": "object",
+          "required": ["shell_enabled", "python_enabled", "allowed_commands"],
+          "additionalProperties": false,
+          "properties": {
+            "shell_enabled": {"type": "boolean"},
+            "python_enabled": {"type": "boolean"},
+            "allowed_commands": {
+              "type": "array",
+              "uniqueItems": true,
+              "maxItems": 64,
+              "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$"}
+            }
+          }
+        },
+        "isolation": {
+          "type": "object",
+          "required": ["type", "fallback"],
+          "additionalProperties": false,
+          "properties": {
+            "type": {"enum": ["disabled", "local", "oci"]},
+            "runtime": {"enum": ["docker", "podman"]},
+            "image": {"type": "string", "maxLength": 512},
+            "fallback": {"const": "deny"}
+          }
+        },
+        "resource_limits": {
+          "type": "object",
+          "required": ["max_cpu_seconds_per_action", "max_memory_mb"],
+          "additionalProperties": false,
+          "properties": {
+            "max_cpu_seconds_per_action": {"type": "integer", "minimum": 1, "maximum": 60},
+            "max_memory_mb": {"type": "integer", "minimum": 64, "maximum": 2048}
+          }
+        }
+      }
+    },
+    "escalation": {
+      "type": "object",
+      "required": ["triggers"],
+      "additionalProperties": false,
+      "properties": {
+        "triggers": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "required": ["id", "description", "severity", "tools"],
+            "additionalProperties": false,
+            "properties": {
+              "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"},
+              "description": {"type": "string", "minLength": 1, "maxLength": 1024},
+              "severity": {"enum": ["low", "medium", "high", "critical"]},
+              "tools": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {"anyOf": [{"const": "*"}, {"$ref": "#/$defs/toolName"}]}
+              },
+              "params": {
+                "type": "object",
+                "maxProperties": 16,
+                "propertyNames": {"pattern": "^[A-Za-z0-9_.-]{1,64}$"},
+                "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 512}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "toolName": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"}
+  }
+}

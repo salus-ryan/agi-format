@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/salus-ryan/agi-format/v0.5.0/schemas/policy-v0.2.0.json",
+  "tools": [
+    {"name": "file_read", "scope": "fs:read", "description": "Read a file inside the session workspace."},
+    {"name": "file_write", "scope": "fs:write", "requires_approval": true, "description": "Write a file inside the session workspace."}
+  ],
+  "budget": {"max_actions_per_session": 100},
+  "sandbox": {
+    "network": {"allowed_domains": [], "allow_http": false, "allow_post": false},
+    "execution": {"shell_enabled": false, "python_enabled": false, "allowed_commands": []},
+    "isolation": {"type": "disabled", "fallback": "deny"},
+    "resource_limits": {"max_cpu_seconds_per_action": 30, "max_memory_mb": 512}
+  },
+  "escalation": {
+    "triggers": [
+      {
+        "id": "credential_paths",
+        "description": "Reading or writing files that look like credentials needs a human.",
+        "severity": "high",
+        "tools": ["file_read", "file_write"],
+        "params": {"path": "(?i)(\\.env|\\.pem|id_rsa|credentials|secret)"}
+      }
+    ]
+  }
+}

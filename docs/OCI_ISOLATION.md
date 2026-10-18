@@ -1,8 +1,8 @@
 # OCI process-tool isolation
 
-The reference runtime can execute allowlisted command and Python tools inside Docker or Podman.
-This backend is opt-in. The starter package declares process isolation `disabled`, so the hosted
-Modal deployment executes neither shell commands nor caller-supplied Python.
+The reference executor can run allowlisted command and Python tools inside Docker or Podman.
+This backend is opt-in. The starter package declares process isolation `disabled`, so it runs
+neither shell commands nor caller-supplied Python.
 
 OCI isolation is a stronger boundary than a same-process subprocess profile, but it is not a
 microVM. The host kernel, container runtime, daemon, pinned image, and workspace contents remain
@@ -24,27 +24,30 @@ The runtime uses `--pull=never`; the exact digest must already exist locally. A 
 
 ## Package policy
 
-Configure `action/sandbox/sandbox.json`:
+Configure the `sandbox` section of `policy.json` and declare the `shell` tool:
 
 ```json
 {
-  "execution": {
-    "shell_enabled": true,
-    "python_enabled": false,
-    "allowed_commands": ["pwd", "ls", "head", "wc"]
-  },
-  "isolation": {
-    "type": "oci",
-    "runtime": "docker",
-    "image": "example.invalid/agi-tools@sha256:<digest>",
-    "fallback": "deny"
+  "tools": [{"name": "shell", "scope": "process:exec"}],
+  "sandbox": {
+    "execution": {
+      "shell_enabled": true,
+      "python_enabled": false,
+      "allowed_commands": ["pwd", "ls", "head", "wc"]
+    },
+    "isolation": {
+      "type": "oci",
+      "runtime": "docker",
+      "image": "example.invalid/agi-tools@sha256:<digest>",
+      "fallback": "deny"
+    }
   }
 }
 ```
 
-Every enabled tool must also appear in `action/tools/tools.json`. Sandbox flags cannot add an
-undeclared tool. Keep `AGI_REQUIRE_STRONG_TOOL_ISOLATION=true`; if OCI setup is unavailable or
-invalid, kernel initialization fails instead of falling back to local execution.
+Sandbox flags cannot add an undeclared tool. Keep `require_strong_isolation=True` when calling
+`Policy.build_executor`; if the OCI setup is unavailable or invalid, executor construction fails
+instead of falling back to local execution.
 
 ## Enforced invocation
 
@@ -72,4 +75,3 @@ are reconstructed from a minimal allowlist and do not inherit application creden
 - Workspace files are intentionally writable and must be treated as untrusted after execution.
 - Multi-tenant hostile workloads should use a dedicated worker container or microVM rather than a
   shared daemon.
-- Horizontal API scaling still requires transactional shared state and distributed rate limits.
