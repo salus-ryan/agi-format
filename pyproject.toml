@@ -38,7 +38,7 @@ learning = [
     "transformers>=4.51,<5",
 ]
 perception = [
-    "pillow>=10,<12",
+    "pillow>=10,<14",
     "transformers>=4.51,<5",
 ]
 dev = [
